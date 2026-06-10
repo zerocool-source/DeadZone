@@ -7,7 +7,7 @@ import { Horde } from './zombies.js';
 import { Arsenal, WEAPON_DEFS, UPGRADE_COST } from './weapons.js';
 import { Player } from './player.js';
 import { HUD } from './hud.js';
-import { initAudio, resumeAudio, sfx } from './audio.js';
+import { initAudio, resumeAudio, loadSoundOverrides, sfx } from './audio.js';
 import { textSprite } from './textures.js';
 
 // ------------------------------------------------------------ renderer/scene
@@ -188,6 +188,7 @@ document.addEventListener('pointerlockchange', () => {
 
 document.getElementById('start-btn').addEventListener('click', () => {
   initAudio();
+  loadSoundOverrides();
   resumeAudio();
   hud.showStart(false);
   game.state = 'playing';

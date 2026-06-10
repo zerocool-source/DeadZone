@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { bloodStainTexture } from './textures.js';
 import { groundHeightAt } from './world.js';
+import { applyDecalIfPresent } from './assets.js';
 
 const MAX_PARTICLES = 600;
 const MAX_DECALS = 90;
@@ -36,6 +37,7 @@ export class GoreSystem {
       map: bloodStainTexture(), transparent: true, depthWrite: false,
       polygonOffset: true, polygonOffsetFactor: -2,
     });
+    applyDecalIfPresent('blood_splatter', this.decalMat);
     this.decals = [];
 
     // --- gibs

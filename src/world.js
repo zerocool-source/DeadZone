@@ -11,6 +11,7 @@
 //   [ BASEMENT y=-3.2 ]
 import * as THREE from 'three';
 import { concreteTexture, brickTexture, woodTexture, textSprite } from './textures.js';
+import { applyTextureIfPresent } from './assets.js';
 
 export const ZONES = {
   GROUND:   { id: 'GROUND',   floorY: 0 },
@@ -164,10 +165,30 @@ export class World {
 
   // ------------------------------------------------------------- build
   _build(scene) {
-    const concrete = new THREE.MeshStandardMaterial({ map: concreteTexture(6, 6), roughness: 0.95 });
-    const concreteDark = new THREE.MeshStandardMaterial({ map: concreteTexture(6, 6, '#35353a'), roughness: 0.95 });
-    const brick = new THREE.MeshStandardMaterial({ map: brickTexture(5, 2), roughness: 0.9 });
-    const wood = new THREE.MeshStandardMaterial({ map: woodTexture(5, 5), roughness: 0.85 });
+    // Named material slots — real textures dropped into assets/textures/
+    // (e.g. wall_brick.jpg) hot-swap the procedural maps. See assets/README.md.
+    const mats = {
+      wall_concrete:  new THREE.MeshStandardMaterial({ map: concreteTexture(6, 6), roughness: 0.95 }),
+      wall_brick:     new THREE.MeshStandardMaterial({ map: brickTexture(5, 2), roughness: 0.9 }),
+      wall_metal:     new THREE.MeshStandardMaterial({ map: concreteTexture(4, 2, '#35353a'), metalness: 0.3, roughness: 0.75 }),
+      floor_wood:     new THREE.MeshStandardMaterial({ map: woodTexture(5, 5), roughness: 0.85 }),
+      floor_concrete: new THREE.MeshStandardMaterial({ map: concreteTexture(6, 6), roughness: 0.95 }),
+      floor_basement: new THREE.MeshStandardMaterial({ map: concreteTexture(5, 4, '#2e3030'), roughness: 0.95 }),
+      wood:           new THREE.MeshStandardMaterial({ map: woodTexture(2, 2), roughness: 0.85 }),
+    };
+    const texRepeats = {
+      wall_concrete: [6, 6], wall_brick: [5, 2], wall_metal: [4, 2],
+      floor_wood: [5, 5], floor_concrete: [6, 6], floor_basement: [5, 4], wood: [2, 2],
+    };
+    for (const [slot, mat] of Object.entries(mats)) {
+      const [rx, ry] = texRepeats[slot];
+      applyTextureIfPresent(slot, mat, { repeatX: rx, repeatY: ry });
+    }
+    this.materials = mats;
+    const concrete = mats.wall_concrete;
+    const concreteDark = mats.wall_metal;
+    const brick = mats.wall_brick;
+    const wood = mats.wood;
 
     const box = (mat, x1, y1, z1, x2, y2, z2, { collide = true } = {}) => {
       const w = x2 - x1, h = y2 - y1, d = z2 - z1;
@@ -184,16 +205,16 @@ export class World {
     };
 
     // ---- floors (visual; physics uses groundHeightAt)
-    box(wood, -10, -0.3, -7, 10, 0, 7, { collide: false });                  // ground room
-    box(concrete, 16, 2.9, -6, 30, 3.2, 6, { collide: false });              // upper room
-    box(concreteDark, -8, -3.5, 13, 8, -3.2, 25, { collide: false });        // basement
+    box(mats.floor_wood, -10, -0.3, -7, 10, 0, 7, { collide: false });       // ground room
+    box(mats.floor_concrete, 16, 2.9, -6, 30, 3.2, 6, { collide: false });   // upper room
+    box(mats.floor_basement, -8, -3.5, 13, 8, -3.2, 25, { collide: false }); // basement
     // stair ramps (visual)
-    const rampA = new THREE.Mesh(new THREE.BoxGeometry(Math.hypot(6, 3.2), 0.3, 4), concrete);
+    const rampA = new THREE.Mesh(new THREE.BoxGeometry(Math.hypot(6, 3.2), 0.3, 4), mats.floor_concrete);
     rampA.position.set(13, 1.6 - 0.15, 0);
     rampA.rotation.z = Math.atan2(3.2, 6);
     rampA.receiveShadow = true;
     scene.add(rampA);
-    const rampB = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, Math.hypot(6, 3.2)), concreteDark);
+    const rampB = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, Math.hypot(6, 3.2)), mats.floor_basement);
     rampB.position.set(0, -1.6 - 0.15, 10);
     rampB.rotation.x = -Math.atan2(3.2, 6);
     rampB.receiveShadow = true;
@@ -248,7 +269,7 @@ export class World {
       { x: 8,   y: -3.2, z: 21,   ry: -Math.PI / 2, zone: 'BASEMENT' },
       { x: 3,   y: -3.2, z: 25,   ry: Math.PI,     zone: 'BASEMENT' },
     ];
-    const boardMat = new THREE.MeshStandardMaterial({ map: woodTexture(1, 1), roughness: 1 });
+    const boardMat = mats.wood;
     const holeMat = new THREE.MeshBasicMaterial({ color: 0x050505 });
     for (const w of windows) {
       const grp = new THREE.Group();
@@ -328,6 +349,90 @@ export class World {
     addFlicker(0, 2.2, 10, 0xffc080, 7, 9);
     addFlicker(-3, 0.4, 18, 0x88ff99, 10, 13);   // sickly green basement light
     addFlicker(4, 0.4, 22, 0x88ff99, 10, 13);
+
+    this._dressSet(scene, mats);
+  }
+
+  // Set dressing: crates, barrels, pipes, sandbags, generator. Procedural
+  // stand-ins styled after the industrial/sewer prop packs; swap for real
+  // models as assets land.
+  _dressSet(scene, mats) {
+    const rustMat = new THREE.MeshStandardMaterial({ color: 0x4a3828, metalness: 0.55, roughness: 0.6 });
+    const barrelMat = new THREE.MeshStandardMaterial({ color: 0x5e1f1c, metalness: 0.4, roughness: 0.7 });
+    const sandbagMat = new THREE.MeshStandardMaterial({ color: 0x4a4034, roughness: 1 });
+
+    const crate = (x, y, z, s = 1) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.95 * s, 0.95 * s, 0.95 * s), mats.wood);
+      m.position.set(x, y + 0.475 * s, z);
+      m.rotation.y = Math.random() * 0.5;
+      m.castShadow = m.receiveShadow = true;
+      scene.add(m);
+    };
+    const barrel = (x, y, z) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.95, 12), barrelMat);
+      m.position.set(x, y + 0.475, z);
+      m.castShadow = m.receiveShadow = true;
+      scene.add(m);
+    };
+    const pipe = (x1, y1, z1, x2, y2, z2, r = 0.09) => {
+      const a = new THREE.Vector3(x1, y1, z1), b = new THREE.Vector3(x2, y2, z2);
+      const len = a.distanceTo(b);
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 8), rustMat);
+      m.position.copy(a).add(b).multiplyScalar(0.5);
+      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
+        b.clone().sub(a).normalize());
+      m.castShadow = true;
+      scene.add(m);
+      // joints
+      for (const p of [a, b]) {
+        const j = new THREE.Mesh(new THREE.SphereGeometry(r * 1.35, 8, 8), rustMat);
+        j.position.copy(p);
+        scene.add(j);
+      }
+    };
+
+    // ground room: crate stack + barrels + a corner standpipe
+    crate(-8.6, 0, 5.6); crate(-7.5, 0, 5.9, 0.85); crate(-8.4, 0.95, 5.6, 0.8);
+    this.colliders.push(new Collider(-9.2, -6.9, 0, 1.9, 5.0, 6.5));
+    barrel(8.8, 0, -6.2); barrel(8.1, 0, -6.6);
+    this.colliders.push(new Collider(7.6, 9.3, 0, 1, -7, -5.7));
+    pipe(9.6, 0, 6.6, 9.6, 4, 6.6, 0.12);
+    pipe(-10, 3.4, -2, -10, 3.4, 7, 0.1);
+
+    // upper room: crates + barrels
+    crate(28.8, 3.2, -5); crate(27.7, 3.2, -5.3, 0.9);
+    this.colliders.push(new Collider(27.1, 29.4, 3.2, 4.3, -5.9, -4.4));
+    barrel(16.9, 3.2, 5.2);
+    this.colliders.push(new Collider(16.5, 17.3, 3.2, 4.2, 4.8, 5.6));
+    pipe(16, 6.6, -4, 30, 6.6, -4, 0.1);
+
+    // basement: pipe runs, sandbags, generator by the upgrade bench
+    pipe(-7.6, -0.5, 13, -7.6, -0.5, 25, 0.12);
+    pipe(-7.6, -1.0, 13, -7.6, -1.0, 25, 0.09);
+    pipe(-7.6, -0.5, 24.6, -7.6, -3.2, 24.6, 0.12);
+    pipe(7.6, -0.4, 14, 7.6, -0.4, 24, 0.1);
+    for (let i = 0; i < 6; i++) { // sandbag wall near the stairs
+      const bag = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 8), sandbagMat);
+      bag.rotation.z = Math.PI / 2;
+      bag.rotation.y = (Math.random() - 0.5) * 0.4;
+      bag.position.set(-5.2 + (i % 3) * 0.62, -3.2 + 0.2 + Math.floor(i / 3) * 0.38, 13.9);
+      bag.castShadow = bag.receiveShadow = true;
+      scene.add(bag);
+    }
+    this.colliders.push(new Collider(-5.8, -3.7, -3.2, -2.3, 13.6, 14.2));
+    // generator: humming hulk next to the bench
+    const gen = new THREE.Group();
+    const genBody = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.9, 0.8), rustMat);
+    genBody.position.y = 0.55;
+    genBody.castShadow = true;
+    gen.add(genBody);
+    const genDrum = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.7, 10), barrelMat);
+    genDrum.rotation.z = Math.PI / 2;
+    genDrum.position.set(0, 1.15, 0);
+    gen.add(genDrum);
+    gen.position.set(2.2, -3.2, 23.8);
+    scene.add(gen);
+    this.colliders.push(new Collider(1.4, 3.0, -3.2, -2.0, 23.3, 24.3));
   }
 
   _makeDoor(name, mat, x1, y1, z1, x2, y2, z2, cost, destination) {

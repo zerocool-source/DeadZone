@@ -1,9 +1,12 @@
 // Procedural WebAudio sound effects — placeholders until real audio assets
-// are added. Each named sound below maps 1:1 to a future asset file
-// (see README), so swapping in real .mp3/.ogg files is a one-line change.
+// are added. Each named sfx key maps 1:1 to an asset file: drop
+// assets/sounds/<name>.mp3 (or .ogg/.wav) in and it overrides the
+// synthesized version automatically.
+import { soundPathIfPresent } from './assets.js';
 
 let ctx = null;
 let master = null;
+const overrides = {}; // sfx name -> decoded AudioBuffer
 
 export function initAudio() {
   if (ctx) return;
@@ -15,6 +18,28 @@ export function initAudio() {
 
 export function resumeAudio() {
   if (ctx && ctx.state === 'suspended') ctx.resume();
+}
+
+// Probe assets/sounds/ for real audio files and override the synthesized
+// effects with any that exist. Call once after initAudio().
+export async function loadSoundOverrides() {
+  for (const name of Object.keys(sfx)) {
+    const path = await soundPathIfPresent(name);
+    if (!path) continue;
+    try {
+      const res = await fetch(path);
+      overrides[name] = await ctx.decodeAudioData(await res.arrayBuffer());
+    } catch { /* keep the synthesized version */ }
+  }
+}
+
+function playOverride(name) {
+  if (!ctx || !overrides[name]) return false;
+  const src = ctx.createBufferSource();
+  src.buffer = overrides[name];
+  src.connect(master);
+  src.start();
+  return true;
 }
 
 function noiseBuffer(seconds) {
@@ -82,3 +107,9 @@ export const sfx = {
                   setTimeout(() => tone({ freq: 110, duration: 1.6, peak: 0.3, type: 'sawtooth', slideTo: 55 }), 700); },
   roundEnd()    { [330, 262, 220, 165].forEach((f, i) => setTimeout(() => tone({ freq: f, duration: 0.5, peak: 0.2, type: 'triangle' }), i * 260)); },
 };
+
+// Route every effect through the override check; falls back to synthesis.
+for (const name of Object.keys(sfx)) {
+  const synth = sfx[name];
+  sfx[name] = () => { if (!playOverride(name)) synth(); };
+}
