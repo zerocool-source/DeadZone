@@ -2,7 +2,9 @@
 // chase AI with cross-floor waypoint routing, and the round-based horde
 // manager that scales health/speed/count per round.
 import * as THREE from 'three';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { groundHeightAt, resolveCollisions, zoneAt } from './world.js';
+import { zombieModels } from './assets.js';
 import { sfx } from './audio.js';
 
 const ZOMBIE_RADIUS = 0.38;
@@ -25,7 +27,7 @@ const gashMat = new THREE.MeshStandardMaterial({ color: 0x6e0505, roughness: 0.8
 let nextId = 1;
 
 export class Zombie {
-  constructor(scene, spawnPos, { health, speed }) {
+  constructor(scene, spawnPos, { health, speed, runner = false }) {
     this.id = nextId++;
     this.scene = scene;
     this.health = health;
@@ -38,11 +40,61 @@ export class Zombie {
     this.walkPhase = Math.random() * Math.PI * 2;
     this.deadTimer = 0;
     this.hitMeshes = [];
-
-    const skin = skinMats[(Math.random() * skinMats.length) | 0];
-    const cloth = clothMats[(Math.random() * clothMats.length) | 0];
+    this.mixer = null;
+    this.headBone = null;
 
     const g = new THREE.Group();
+    const model = runner ? (zombieModels.runner || zombieModels.walker) : zombieModels.walker;
+    if (model) this._buildFromModel(g, model);
+    else this._buildProcedural(g);
+
+    g.position.copy(spawnPos);
+    g.position.y = groundHeightAt(spawnPos.x, spawnPos.z) - 1.8; // rises out of the floor
+    scene.add(g);
+    this.group = g;
+  }
+
+  // Skinned GLB body (assets/models/) with invisible hitboxes for shooting.
+  _buildFromModel(g, model) {
+    const inst = cloneSkeleton(model.scene);
+    inst.scale.setScalar(model.scale);
+    inst.position.y = model.yOffset;
+    g.add(inst);
+    if (model.clip) {
+      this.mixer = new THREE.AnimationMixer(inst);
+      this.mixer.clipAction(model.clip).play();
+      this.mixer.update(Math.random() * model.clip.duration); // desync the horde
+    }
+    inst.traverse(n => { if (!this.headBone && n.isBone && /head/i.test(n.name)) this.headBone = n; });
+
+    // raycast against simple boxes, not the high-poly skinned mesh
+    const invisMat = new THREE.MeshBasicMaterial();
+    invisMat.visible = false;
+    const bodyBox = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.15, 0.45), invisMat);
+    bodyBox.position.y = 0.95;
+    bodyBox.userData = { zombie: this, part: 'body' };
+    g.add(bodyBox);
+    this.hitMeshes.push(bodyBox);
+
+    const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.34, 0.32), invisMat);
+    headBox.userData = { zombie: this, part: 'head' };
+    if (this.headBone) {
+      g.updateMatrixWorld(true);
+      const ws = new THREE.Vector3();
+      this.headBone.getWorldScale(ws);
+      headBox.scale.set(1 / ws.x, 1 / ws.y, 1 / ws.z); // undo rig scale
+      this.headBone.add(headBox);
+    } else {
+      headBox.position.y = 1.62;
+      g.add(headBox);
+    }
+    this.hitMeshes.push(headBox);
+  }
+
+  // Procedural box body — used until models load (or if files are missing).
+  _buildProcedural(g) {
+    const skin = skinMats[(Math.random() * skinMats.length) | 0];
+    const cloth = clothMats[(Math.random() * clothMats.length) | 0];
     const part = (geom, mat, x, y, z, name) => {
       const m = new THREE.Mesh(geom, mat);
       m.position.set(x, y, z);
@@ -87,11 +139,6 @@ export class Zombie {
     // classic zombie arms-out pose
     this.armL.rotation.x = -Math.PI / 2.3;
     this.armR.rotation.x = -Math.PI / 2.3;
-
-    g.position.copy(spawnPos);
-    g.position.y = groundHeightAt(spawnPos.x, spawnPos.z) - 1.8; // rises out of the floor
-    scene.add(g);
-    this.group = g;
   }
 
   takeDamage(amount, isHead) {
@@ -109,7 +156,8 @@ export class Zombie {
     gore.spawnGibs(chest, headshot ? 8 : 4, headshot ? 7 : 4.5);
     gore.splatFloor(p.x, p.z, 1.4);
     if (headshot) {
-      this.head.visible = false;
+      if (this.headBone) this.headBone.scale.setScalar(0.0001); // pop the head
+      else if (this.head) this.head.visible = false;
       const neck = new THREE.Vector3(p.x, p.y + 1.65, p.z);
       gore.spray(neck, new THREE.Vector3(0, 1, 0), 30, 7);
       sfx.headPop();
@@ -136,6 +184,9 @@ export class Zombie {
       }
       return this.deadTimer <= 0; // true = remove me
     }
+
+    // skinned walk clip drives the body; playback speed follows move speed
+    if (this.mixer) this.mixer.update(dt * THREE.MathUtils.clamp(this.speed / 1.3, 0.5, 2.2));
 
     if (this.state === 'spawning') {
       this.spawnTimer -= dt;
@@ -201,20 +252,30 @@ export class Zombie {
     // face the player (or movement target)
     g.rotation.y = Math.atan2(toPlayer.x, toPlayer.z);
 
-    // shamble animation
-    this.walkPhase += dt * this.speed * 3.2;
-    const s = Math.sin(this.walkPhase);
-    this.legL.rotation.x = s * 0.55;
-    this.legR.rotation.x = -s * 0.55;
-    const armBase = -Math.PI / 2.3;
-    if (this._swing > 0) {
-      this._swing -= dt;
-      this.armR.rotation.x = armBase - 1.1 * Math.sin((0.32 - this._swing) / 0.32 * Math.PI);
+    if (this.mixer) {
+      // model body: quick forward lunge while swiping
+      if (this._swing > 0) {
+        this._swing -= dt;
+        g.rotation.x = -0.28 * Math.sin((0.32 - this._swing) / 0.32 * Math.PI);
+      } else {
+        g.rotation.x = 0;
+      }
     } else {
-      this.armL.rotation.x = armBase + s * 0.16;
-      this.armR.rotation.x = armBase - s * 0.16;
+      // procedural shamble animation
+      this.walkPhase += dt * this.speed * 3.2;
+      const s = Math.sin(this.walkPhase);
+      this.legL.rotation.x = s * 0.55;
+      this.legR.rotation.x = -s * 0.55;
+      const armBase = -Math.PI / 2.3;
+      if (this._swing > 0) {
+        this._swing -= dt;
+        this.armR.rotation.x = armBase - 1.1 * Math.sin((0.32 - this._swing) / 0.32 * Math.PI);
+      } else {
+        this.armL.rotation.x = armBase + s * 0.16;
+        this.armR.rotation.x = armBase - s * 0.16;
+      }
+      g.position.y += Math.abs(s) * 0.04; // bob
     }
-    g.position.y += Math.abs(s) * 0.04; // bob
 
     return false;
   }
@@ -285,6 +346,7 @@ export class Horde {
         this.zombies.push(new Zombie(this.scene, this._pickSpawnPoint(playerPos), {
           health: this.healthForRound(this.round),
           speed: Math.min(speed, 4),
+          runner: isRunner,
         }));
       }
     }

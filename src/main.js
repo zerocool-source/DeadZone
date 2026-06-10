@@ -8,7 +8,10 @@ import { Arsenal, WEAPON_DEFS, UPGRADE_COST } from './weapons.js';
 import { Player } from './player.js';
 import { HUD } from './hud.js';
 import { initAudio, resumeAudio, loadSoundOverrides, sfx } from './audio.js';
+import { loadZombieModels } from './assets.js';
 import { textSprite } from './textures.js';
+
+loadZombieModels(); // async; zombies use procedural bodies until ready
 
 // ------------------------------------------------------------ renderer/scene
 const canvas = document.getElementById('game-canvas');
