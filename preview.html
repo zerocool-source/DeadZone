@@ -1,0 +1,70 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:0;background:#15171c}</style></head><body>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const params = new URLSearchParams(location.search);
+const model = params.get('m');
+const angle = parseFloat(params.get('a') || '0');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(640, 720);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171c);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(2, 4, 3); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 1.2); rim.position.set(-3, 2, -2); scene.add(rim);
+const camera = new THREE.PerspectiveCamera(40, 640/720, 0.01, 100);
+
+// Old Sketchfab exports use the removed spec/gloss extension; map its
+// diffuse texture onto a standard material so they aren't gray.
+class SpecGlossPlugin {
+  constructor(parser) { this.parser = parser; this.name = 'KHR_materials_pbrSpecularGlossiness'; }
+  getMaterialType(i) {
+    const md = this.parser.json.materials[i];
+    return md.extensions && md.extensions[this.name] ? THREE.MeshStandardMaterial : null;
+  }
+  extendMaterialParams(i, params) {
+    const md = this.parser.json.materials[i];
+    const ext = md.extensions && md.extensions[this.name];
+    if (!ext) return Promise.resolve();
+    const df = ext.diffuseFactor || [1, 1, 1, 1];
+    params.color = new THREE.Color(df[0], df[1], df[2]);
+    params.roughness = 0.85;
+    params.metalness = 0;
+    const pending = [];
+    if (ext.diffuseTexture) pending.push(this.parser.assignTexture(params, 'map', ext.diffuseTexture, THREE.SRGBColorSpace));
+    return Promise.all(pending);
+  }
+}
+const gltfLoader = new GLTFLoader();
+gltfLoader.register(p => new SpecGlossPlugin(p));
+gltfLoader.load(`assets/models/${model}.glb`, gltf => {
+  const obj = gltf.scene;
+  scene.add(obj);
+  // report contents
+  const meshes = [], bones = [];
+  obj.traverse(n => { if (n.isMesh || n.isSkinnedMesh) meshes.push(n.name + (n.isSkinnedMesh ? ' [skinned]' : '')); if (n.isBone) bones.push(n.name); });
+  window.__info = {
+    animations: gltf.animations.map(a => ({ name: a.name, duration: +a.duration.toFixed(2) })),
+    meshes: meshes.slice(0, 20), boneCount: bones.length,
+  };
+  // play first animation at a mid-stride pose
+  if (gltf.animations.length) {
+    const mixer = new THREE.AnimationMixer(obj);
+    mixer.clipAction(gltf.animations[0]).play();
+    mixer.update(gltf.animations[0].duration * 0.3);
+  }
+  obj.updateMatrixWorld(true);
+  // frame the model
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  window.__info.size = { x: +size.x.toFixed(2), y: +size.y.toFixed(2), z: +size.z.toFixed(2) };
+  const dist = Math.max(size.x, size.y, size.z) * 1.6;
+  camera.position.set(center.x + Math.sin(angle) * dist, center.y + size.y * 0.15, center.z + Math.cos(angle) * dist);
+  camera.lookAt(center);
+  renderer.render(scene, camera);
+  window.__done = true;
+}, undefined, err => { window.__err = String(err && err.message || err); window.__done = true; });
+</script></body></html>
