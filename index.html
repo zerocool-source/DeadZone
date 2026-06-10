@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DEADZONE</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  #game-canvas { display: block; width: 100%; height: 100%; }
+  #hud {
+    position: fixed; inset: 0; pointer-events: none;
+    font-family: 'Courier New', monospace; color: #ddd;
+    user-select: none;
+  }
+
+  /* crosshair */
+  #crosshair {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 24px; height: 24px; opacity: 0.9;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: #e8e8e8;
+  }
+  #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+  #crosshair::after { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+  #hitmarker {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(45deg);
+    width: 26px; height: 26px; opacity: 0; transition: opacity 0.18s;
+  }
+  #hitmarker::before, #hitmarker::after {
+    content: ''; position: absolute; background: #ff3030;
+  }
+  #hitmarker::before { left: 50%; top: 0; width: 3px; height: 100%; transform: translateX(-50%); }
+  #hitmarker::after { top: 50%; left: 0; height: 3px; width: 100%; transform: translateY(-50%); }
+
+  /* round counter */
+  #round {
+    position: absolute; left: 28px; bottom: 92px;
+    font-size: 64px; font-weight: bold; color: #a40000;
+    text-shadow: 0 0 18px #ff0000, 2px 2px 2px #000;
+    font-family: Georgia, 'Times New Roman', serif;
+  }
+  #round-label {
+    position: absolute; left: 30px; bottom: 70px; font-size: 14px;
+    letter-spacing: 4px; color: #802020; text-shadow: 1px 1px 1px #000;
+  }
+
+  /* points */
+  #points {
+    position: absolute; left: 28px; bottom: 28px;
+    font-size: 30px; font-weight: bold; color: #ffd34d;
+    text-shadow: 2px 2px 2px #000;
+  }
+  .point-pop {
+    position: absolute; font-size: 20px; font-weight: bold; color: #ffd34d;
+    text-shadow: 1px 1px 1px #000; animation: pop-up 0.9s forwards;
+  }
+  .point-pop.red { color: #ff4d4d; }
+  @keyframes pop-up {
+    from { opacity: 1; transform: translateY(0); }
+    to   { opacity: 0; transform: translateY(-44px); }
+  }
+
+  /* ammo + weapon */
+  #weapon-box {
+    position: absolute; right: 32px; bottom: 28px; text-align: right;
+  }
+  #weapon-name {
+    font-size: 18px; letter-spacing: 2px; color: #ccc; text-shadow: 1px 1px 1px #000;
+  }
+  #weapon-name.upgraded { color: #c77dff; text-shadow: 0 0 10px #9d4edd; }
+  #ammo { font-size: 40px; font-weight: bold; text-shadow: 2px 2px 2px #000; }
+  #ammo .reserve { font-size: 24px; color: #999; }
+  #ammo.low { color: #ff4d4d; }
+  #reload-hint {
+    font-size: 14px; color: #ff6b6b; visibility: hidden;
+    animation: blink 0.8s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.2; } }
+
+  /* interact prompt */
+  #prompt {
+    position: absolute; left: 50%; bottom: 24%; transform: translateX(-50%);
+    font-size: 19px; color: #fff; text-shadow: 1px 1px 2px #000;
+    background: rgba(0,0,0,0.55); padding: 10px 22px; border: 1px solid #555;
+    visibility: hidden; text-align: center;
+  }
+  #prompt .key { color: #ffd34d; font-weight: bold; }
+
+  /* announcements (round change, power, etc.) */
+  #announce {
+    position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+    font-size: 42px; color: #a40000; font-family: Georgia, serif; font-weight: bold;
+    text-shadow: 0 0 24px #ff0000, 2px 2px 2px #000; opacity: 0;
+    transition: opacity 1.2s; white-space: nowrap;
+  }
+
+  /* damage vignette */
+  #damage-vignette {
+    position: absolute; inset: 0; opacity: 0; transition: opacity 0.35s;
+    background: radial-gradient(ellipse at center, rgba(120,0,0,0) 42%, rgba(150,0,0,0.85) 100%);
+  }
+  #blood-splatter {
+    position: absolute; inset: 0; opacity: 0;
+    background: radial-gradient(ellipse at center, rgba(170,0,0,0.35) 0%, rgba(100,0,0,0.6) 100%);
+  }
+
+  /* overlay screens */
+  .screen {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: rgba(0,0,0,0.88); color: #ccc; z-index: 10;
+    font-family: 'Courier New', monospace; text-align: center;
+  }
+  .screen h1 {
+    font-size: 84px; color: #a40000; font-family: Georgia, serif;
+    text-shadow: 0 0 30px #ff0000; letter-spacing: 8px;
+  }
+  .screen .sub { font-size: 18px; color: #888; max-width: 640px; line-height: 1.7; }
+  .screen .big-btn {
+    pointer-events: auto; cursor: pointer; font-size: 22px; padding: 14px 46px;
+    background: #1a0000; color: #ff4d4d; border: 2px solid #802020;
+    font-family: inherit; letter-spacing: 3px;
+  }
+  .screen .big-btn:hover { background: #330000; box-shadow: 0 0 18px #800000; }
+  .hidden { display: none !important; }
+  #gameover-stats { font-size: 20px; color: #aaa; line-height: 1.8; }
+</style>
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+
+<div id="hud">
+  <div id="damage-vignette"></div>
+  <div id="blood-splatter"></div>
+  <div id="crosshair"></div>
+  <div id="hitmarker"></div>
+  <div id="round">1</div>
+  <div id="round-label">ROUND</div>
+  <div id="points">500</div>
+  <div id="weapon-box">
+    <div id="weapon-name">M1911</div>
+    <div id="ammo"><span class="mag">8</span> <span class="reserve">/ 32</span></div>
+    <div id="reload-hint">RELOAD [R]</div>
+  </div>
+  <div id="prompt"></div>
+  <div id="announce"></div>
+</div>
+
+<div id="start-screen" class="screen">
+  <h1>DEADZONE</h1>
+  <div class="sub">
+    Survive the horde. Earn points for every hit and kill.<br>
+    Buy weapons off the walls. Open doors to reach the upper floor and the basement.<br>
+    Find the upgrade bench in the basement to Pack your weapon.<br><br>
+    WASD move &nbsp;|&nbsp; MOUSE aim &nbsp;|&nbsp; CLICK shoot &nbsp;|&nbsp; R reload<br>
+    F buy / interact &nbsp;|&nbsp; SHIFT sprint &nbsp;|&nbsp; 1 / 2 switch weapon
+  </div>
+  <button id="start-btn" class="big-btn">ENTER THE DEADZONE</button>
+</div>
+
+<div id="gameover-screen" class="screen hidden">
+  <h1>YOU DIED</h1>
+  <div id="gameover-stats"></div>
+  <button id="restart-btn" class="big-btn">TRY AGAIN</button>
+</div>
+
+<div id="paused-screen" class="screen hidden">
+  <h1 style="font-size:48px">PAUSED</h1>
+  <div class="sub">Click below to resume.</div>
+  <button id="resume-btn" class="big-btn">RESUME</button>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./node_modules/three/build/three.module.js" } }
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

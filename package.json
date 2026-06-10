@@ -1,0 +1,20 @@
+{
+  "name": "deadzone",
+  "version": "0.1.0",
+  "description": "DeadZone - round-based FPS zombie survival",
+  "main": "index.js",
+  "scripts": {
+    "start": "npx serve -l 3000 ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:34541/git/zerocool-source/DeadZone"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.184.0"
+  },
+  "type": "module"
+}
