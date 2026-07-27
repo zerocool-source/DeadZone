@@ -694,7 +694,10 @@ export class GameServer extends DurableObject {
       // inverse of the movement transform in tick(): right = (cos,-sin)
       inp.mx = (mvx * cos - mvz * sin) * mvScale;
       inp.mz = (-mvx * sin - mvz * cos) * mvScale;
-      inp.sprint = sprint && !crouch && !(fireOk && vis);   // never sprint and shoot
+      // never sprint and shoot: gate on being ready to pull the trigger this
+      // tick, not on merely being allowed to (fireOk is always true in ENGAGE)
+      inp.sprint = sprint && !crouch &&
+        !(fireOk && vis && now >= ai.fireAt && now >= ai.nextShotAt);
     }
 
     // --- shooting: only inside the aim cone, in bursts, after the reaction.
@@ -740,8 +743,11 @@ export class GameServer extends DurableObject {
 
     // --- stuck watchdog: wanted to move but did not, so ditch the plan
     if (mvScale > 0.1) {
+      // measure against what was actually commanded: a crouched micro-strafe is
+      // slower than any fixed floor by design and must not read as wedged
+      const cmd = mvScale * (crouch ? CROUCH_SPEED : (inp.sprint ? SPRINT : WALK)) * dt * 0.35;
       const sdx = p.x - ai.lastX, sdz = p.z - ai.lastZ;
-      if (sdx * sdx + sdz * sdz < 0.0009) ai.stuck += dt; else ai.stuck = 0;
+      if (sdx * sdx + sdz * sdz < cmd * cmd) ai.stuck += dt; else ai.stuck = 0;
     } else ai.stuck = 0;
     ai.lastX = p.x; ai.lastZ = p.z;
     if (ai.stuck > 1.2) {
@@ -1048,7 +1054,6 @@ export class GameServer extends DurableObject {
       const { mx, mz, sprint, jump, crouch } = p.input;
       const l = Math.hypot(mx, mz);
       const grounded = p.y === 0;
-      let moved = 0;
       if (l > 0.01) {
         const nx = mx / Math.max(1, l), nz = mz / Math.max(1, l);
         const sin = Math.sin(p.yaw), cos = Math.cos(p.yaw);
@@ -1056,19 +1061,8 @@ export class GameServer extends DurableObject {
         const wz = -nx * sin - nz * cos;
         // crouch beats sprint; sprint only counts moving forward-ish
         const sp = crouch ? CROUCH_SPEED : (sprint ? SPRINT : WALK);
-        const stepX = wx * sp * dt, stepZ = wz * sp * dt;
-        p.x += stepX;
-        p.z += stepZ;
-        moved = Math.hypot(stepX, stepZ);
-        p.speedNorm = Math.min(1, sp * Math.min(1, l) / SPRINT);
-      } else {
-        p.speedNorm = 0;
-      }
-      // footsteps: one event per STEP_DIST travelled on the ground
-      if (grounded && moved > 0) {
-        p.stepAcc += moved;
-        const need = crouch ? STEP_DIST * 1.6 : STEP_DIST;
-        if (p.stepAcc >= need) { p.stepAcc = 0; this.events.push(['step', p.id]); }
+        p.x += wx * sp * dt;
+        p.z += wz * sp * dt;
       }
       // jump + gravity (ground is y=0 everywhere)
       if (jump && grounded) p.vy = JUMP_V;
@@ -1099,9 +1093,20 @@ export class GameServer extends DurableObject {
       p.x = Math.max(-S + 0.6, Math.min(S - 0.6, p.x));
       p.z = Math.max(-S + 0.6, Math.min(S - 0.6, p.z));
 
-      // planar velocity from the actual post-collision delta (bots lead with it)
-      p.vx = (p.x - p.px) / dt; p.vz = (p.z - p.pz) / dt;
+      // planar velocity from the actual post-collision delta (bots lead with it).
+      // Footsteps and speedNorm come off the same real delta, so a body jammed
+      // against geometry neither runs on the spot nor emits step events.
+      const realDX = p.x - p.px, realDZ = p.z - p.pz;
+      p.vx = realDX / dt; p.vz = realDZ / dt;
       p.px = p.x; p.pz = p.z;
+      const realMoved = Math.hypot(realDX, realDZ);
+      p.speedNorm = Math.min(1, realMoved / dt / SPRINT);
+      // footsteps: one event per STEP_DIST travelled on the ground
+      if (grounded && realMoved > 1e-4) {
+        p.stepAcc += realMoved;
+        const need = crouch ? STEP_DIST * 1.6 : STEP_DIST;
+        if (p.stepAcc >= need) { p.stepAcc = 0; this.events.push(['step', p.id]); }
+      }
 
       // pickups
       for (const pk of this.pickups) {

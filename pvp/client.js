@@ -16,7 +16,9 @@ const WEAPONS = {
   longshot: { rpm: 45,  mag: 5,  auto: false, vmSize: 1.3,  range: 130, pellets: 1, spread: 0.003 },
 };
 const EYE = 1.55;
-const INTERP_DELAY = 120; // ms behind live for remote interpolation
+// Must stay just over one server tick (50 ms): the buffer only holds two
+// snapshots, so anything larger parks the lerp factor at 0 and remotes snap.
+const INTERP_DELAY = 60; // ms behind live for remote interpolation
 const FOV_BASE = 75, FOV_ADS = 55, FOV_SPRINT = 79;
 
 // FORMULA palette
@@ -1399,7 +1401,11 @@ function updateRemotes(dt, now) {
     let rowA = rowB;
     for (let i = 0; i < A.m.p.length; i++) if (A.m.p[i][0] === id) { rowA = A.m.p[i]; break; }
     const r = ensureRemote(id, rowB[12], rowB[6]);
-    if (r.epoch !== avatarEpoch) attachAvatar(r); // a better model finished loading
+    if (r.epoch !== avatarEpoch) {          // a model finished loading since last check
+      r.epoch = avatarEpoch;
+      const want = pickAvatarTpl(id);
+      if ((want ? want.key : 'capsule') !== r.tplKey) attachAvatar(r);
+    }
 
     const x = rowA[1] + (rowB[1] - rowA[1]) * t;
     const y = rowA[2] + (rowB[2] - rowA[2]) * t;
@@ -1431,7 +1437,7 @@ function updateRemotes(dt, now) {
     if (yb - ya > Math.PI) ya += Math.PI * 2; else if (ya - yb > Math.PI) yb += Math.PI * 2;
     r.group.rotation.y = ya + (yb - ya) * t + Math.PI;
 
-    // animation state: smoothed so it can't pop between 10 Hz snapshots
+    // animation state: smoothed so it can't pop between 20 Hz snapshots
     const spTarget = alive ? Math.max(0, Math.min(1, rowB[13] || 0)) : 0;
     r.animSpeed += (spTarget - r.animSpeed) * Math.min(1, dt * 7);
     const crouching = alive && (flags & 2) !== 0;
@@ -1708,12 +1714,12 @@ function frame(now) {
   // viewmodel recoil/bob, easing toward screen centre while aiming
   vmRecoil = Math.max(0, vmRecoil - dt * 7);
   const bob = Math.sin(now / 90) * 0.008 * (moveAmt > 0.1 ? 2 : 0.6) * (1 - 0.8 * adsT);
-  // ADS slides the gun to centre; it also moves slightly further out so the
-  // narrower fov doesn't blow it up to fill the screen.
+  // ADS slides the gun to centre and drops it just under the sight line, so it
+  // frames the crosshair instead of covering it at the narrower fov.
   vmHolder.position.set(
     0.3 + (0.0 - 0.3) * adsT,
-    -0.3 + (-0.10 + 0.3) * adsT + bob,
-    -0.62 + (-0.70 + 0.62) * adsT + vmRecoil * 0.07);
+    -0.3 + (-0.19 + 0.3) * adsT + bob,
+    -0.62 + (-0.60 + 0.62) * adsT + vmRecoil * 0.07);
   vmHolder.rotation.x = vmRecoil * 0.08;
 
   renderer.render(scene, camera);
