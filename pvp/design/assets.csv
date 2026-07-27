@@ -19,3 +19,15 @@ sfx_wind,looping wasteland ambience bed,audio,bleak desert wind howling,10s loop
 music_combat,looping combat bed,audio,dark industrial combat loop,30s loop,-,generate
 sky_dome,horizon backdrop,procedural-3d,gradient dome plus sun disc plus drifting cloud billboards plus mountain ring drawn in code,-,STYLE FORMULA,code
 world_terrain,arena geometry,procedural-3d,ground plane with vertex colour variation and instanced obstacle boxes drawn in code,-,STYLE FORMULA,code
+tex_dirt,base terrain material,texture-pbr,cracked dry wasteland dirt with grey stones; seam-repaired tile plus derived normal,512px jpg pair,STYLE TOKEN,generate
+tex_gravel,gravel bed patches (Yard and centre approaches),texture-pbr,loose grey gravel and crushed concrete; seam-repaired tile plus normal,512px jpg pair,STYLE FORMULA,generate
+tex_asphalt,ring road and Strip road surface,texture-pbr,cracked weathered asphalt with faded paint; seam-repaired tile plus normal,512px jpg pair,STYLE TOKEN,generate
+tex_concrete,wall ruin and building surfaces,texture-pbr,stained pitted concrete panels; seam-repaired tile plus normal,512px jpg pair,STYLE FORMULA,generate
+prop_tower,centre landmark on the raised platform,3d-glb,derelict steel water tower on lattice legs,3k tris / 512px,STYLE FORMULA,generate
+prop_car,cover along the Strip road,3d-glb,burnt-out wrecked sedan,3k tris / 512px,STYLE FORMULA,generate
+prop_barrel,small cover clusters,3d-glb,rusted oil drum,800 tris / 512px,STYLE FORMULA,generate
+prop_barrier,linear cover and platform edging,3d-glb,concrete jersey barrier,700 tris / 512px,STYLE FORMULA,generate
+prop_crate,climbable stepping stone onto platforms,3d-glb,weathered wooden crate stack,900 tris / 512px,STYLE FORMULA,generate
+prop_tree,silhouette decoration (no collision),3d-glb,dead leafless tree,1.5k tris / 512px,STYLE FORMULA,generate
+prop_pole,silhouette decoration (no collision),3d-glb,leaning utility pole with broken lamp,800 tris / 512px,STYLE FORMULA,generate
+prop_building,ruined structures in the Ruins district,3d-glb,two-storey concrete shell with window openings,4k tris / 512px,STYLE FORMULA,generate
