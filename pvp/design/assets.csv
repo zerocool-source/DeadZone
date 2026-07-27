@@ -1,12 +1,21 @@
 id,role,type,description,size/ratio,style line ref,source
 cover,deploy thumbnail and marketplace card,image,key art of two infected survivors in a wasteland firefight with DEADZONE title,16:9,STYLE FORMULA,generate
 favicon,site icon and catalog card,image,cracked skull inside rifle scope crosshair emblem,1:1,STYLE FORMULA,generate
-player_avatar,remote player character model,3d-glb,reused DeadZone infected walker GLB with walk clip,~1.8m tall,STYLE FORMULA palette,reference_media[zombie_walk_b.glb]
+soldier_a,remote player avatar variant A,3d-glb-rigged,gas-masked survivor soldier in fatigues and webbing; humanoid rig with RightHand bone plus in-place combat walk clip,1.7m tall / 12k tris / 512px textures,STYLE FORMULA,generate
+soldier_b,remote player avatar variant B,3d-glb-rigged,hooded scavenger raider in patched scrap armor; humanoid rig plus in-place combat walk clip,1.7m tall / 12k tris / 512px textures,STYLE FORMULA,generate
+player_avatar,fallback avatar when the soldier models fail to load,3d-glb,reused DeadZone infected walker,~1.8m tall,STYLE FORMULA palette,reference_media[zombie_walk_b.glb]
+gun_rifle,viewmodel + third-person + pickup for the scav rifle,3d-glb,battered AK-style rifle with wood furniture and taped magazine,4k tris / 512px textures,STYLE FORMULA,generate
+gun_shotgun,viewmodel + third-person + pickup for RIOT-12,3d-glb,rusty pump-action riot shotgun with taped stock,4k tris / 512px textures,STYLE FORMULA,generate
+gun_longshot,viewmodel + third-person + pickup for LONGSHOT,3d-glb,improvised marksman rifle with welded scrap scope,4k tris / 512px textures,STYLE FORMULA,generate
+prop_container,instanced onto world obstacles of kind container,3d-glb,rusted shipping container with cargo doors,2k tris / 512px textures,STYLE FORMULA,generate
+prop_sandbags,instanced onto world obstacles of kind rubble,3d-glb,low sandbag barricade with scrap metal plate,1.5k tris / 512px textures,STYLE FORMULA,generate
 sfx_rifle,rifle fire report,audio,single assault rifle gunshot dry crack,1s,-,generate
 sfx_shotgun,shotgun fire report,audio,heavy pump shotgun blast,1s,-,generate
 sfx_hit,bullet impact feedback,audio,wet fleshy impact thud,1s,-,generate
 sfx_death,player death sting,audio,short guttural death cry,2s,-,generate
 sfx_pickup,weapon and health pickup confirm,audio,quick metallic rack and click,1s,-,generate
+sfx_step,footstep played on step events,audio,boot crunching dry gravel,1s,-,generate
+sfx_wind,looping wasteland ambience bed,audio,bleak desert wind howling,10s loop,-,generate
 music_combat,looping combat bed,audio,dark industrial combat loop,30s loop,-,generate
-world_props,arena set dressing,procedural-3d,flat-shaded ruins containers rubble walls rocks drawn in code,-,STYLE FORMULA,code
-viewmodel_guns,first-person weapon models,procedural-3d,low-poly rifle shotgun longshot drawn in code,-,STYLE FORMULA,code
+sky_dome,horizon backdrop,procedural-3d,gradient dome plus sun disc plus drifting cloud billboards plus mountain ring drawn in code,-,STYLE FORMULA,code
+world_terrain,arena geometry,procedural-3d,ground plane with vertex colour variation and instanced obstacle boxes drawn in code,-,STYLE FORMULA,code
