@@ -347,7 +347,7 @@ function localImpact(dirx, diry, dirz) {
     }
     if (bestT >= w.range || bestT >= enemyT) continue;
     const hx = ox + rx * bestT, hy = oy + ry * bestT, hz = oz + rz * bestT;
-    addDecal(hx, hy, hz, nx, ny, nz, 0.17);
+    addDecal(hx, hy, hz, nx, ny, nz, 0.2);
     addPuff(hx + nx * 0.08, hy + ny * 0.08, hz + nz * 0.08, 0.6);
   }
 }
@@ -544,7 +544,8 @@ function findHandBone(root) {
 const capsuleGeo = new THREE.CapsuleGeometry(0.4, 1.0, 4, 8);
 const capsuleMat = new THREE.MeshLambertMaterial({ color: COL.skin, flatShading: true });
 
-function makeNameSprite(name) {
+function makeNameSprite(rawName) {
+  const name = String(rawName ?? '???');
   const c = document.createElement('canvas'); c.width = 256; c.height = 56;
   const ctx = c.getContext('2d');
   ctx.font = 'bold 30px monospace'; ctx.textAlign = 'center';
@@ -1075,7 +1076,7 @@ function handleEvent(ev, m) {
       }
       const r = remotes.get(a);
       if (r) {
-        r.flashUntil = performance.now() + 60;
+        r.flashUntil = performance.now() + 75;
         if (r.muzzle) { // randomise so repeat shots don't look stamped
           r.muzzle.material.rotation = Math.random() * 6.283;
           const s = 0.32 + Math.random() * 0.18;
@@ -1087,7 +1088,8 @@ function handleEvent(ev, m) {
     if (a === myId) {
       hitmarker(); play('hit', 0.7);
       const vp = posOf(m, b);
-      if (vp) showDamageNumber(b, vp.x, vp.y + 1.6, vp.z, c | 0, !!d);
+      // start above the name plate (sprite spans y 2.04..2.46) so they don't overlap
+      if (vp) showDamageNumber(b, vp.x, vp.y + 2.55, vp.z, c | 0, !!d);
     }
     if (b === myId) {
       damageFlash(); play('hit', 1);
@@ -1705,10 +1707,12 @@ function frame(now) {
   // viewmodel recoil/bob, easing toward screen centre while aiming
   vmRecoil = Math.max(0, vmRecoil - dt * 7);
   const bob = Math.sin(now / 90) * 0.008 * (moveAmt > 0.1 ? 2 : 0.6) * (1 - 0.8 * adsT);
+  // ADS slides the gun to centre; it also moves slightly further out so the
+  // narrower fov doesn't blow it up to fill the screen.
   vmHolder.position.set(
-    0.3 + (0.015 - 0.3) * adsT,
-    -0.3 + (-0.115 + 0.3) * adsT + bob,
-    -0.62 + (-0.5 + 0.62) * adsT + vmRecoil * 0.07);
+    0.3 + (0.0 - 0.3) * adsT,
+    -0.3 + (-0.10 + 0.3) * adsT + bob,
+    -0.62 + (-0.70 + 0.62) * adsT + vmRecoil * 0.07);
   vmHolder.rotation.x = vmRecoil * 0.08;
 
   renderer.render(scene, camera);

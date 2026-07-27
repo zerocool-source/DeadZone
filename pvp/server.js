@@ -596,6 +596,9 @@ export class GameServer extends DurableObject {
       }
       fireOk = true; faceMove = false;
       crouch = radial === 0 && dist > per.crouchAt;
+      // LOS is measured standing: don't duck behind waist-high rubble and then
+      // shoot into it — a human would notice and stay up
+      if (crouch && !this.losPoint(p.x, p.y + 1.1, p.z, tgt)) crouch = false;
       // sprint only to close a big gap, and never mid-burst
       sprint = radial > 0 && dist > want + 14 && (now < ai.fireAt || now < ai.nextShotAt);
       if (radial > 0 && dist > 6 && dist < 22 && now >= ai.jumpAt && Math.random() < 0.03) {
@@ -625,8 +628,8 @@ export class GameServer extends DurableObject {
         yawT = Math.atan2(-(ai.lx - p.x), -(ai.lz - p.z));
       }
     } else if (st === S_RETREAT) {
-      const pk = this.pickups[healI];
-      gx = pk.x; gz = pk.z; hasGoal = true; stopAt = 0.8; sprint = true;
+      const pk = healI >= 0 ? this.pickups[healI] : null;   // guarded: see above
+      if (pk) { gx = pk.x; gz = pk.z; hasGoal = true; stopAt = 0.8; sprint = true; }
       fireOk = vis && dist < 20;
       if (fireOk) faceMove = false;
     } else if (st === S_SEARCH) {
@@ -696,8 +699,9 @@ export class GameServer extends DurableObject {
 
     // --- shooting: only inside the aim cone, in bursts, after the reaction.
     // faceMove states aim down their path, so they must never pull the trigger.
+    const w = WEAPONS[p.weapon];
     if (fireOk && !faceMove && vis && tgt && this.phase === 'play' && now >= ai.fireAt &&
-        now >= ai.nextShotAt && p.reloading <= 0 && p.mag > 0 &&
+        now >= ai.nextShotAt && p.reloading <= 0 && p.mag > 0 && dist < w.range * 0.9 &&
         ai.errY < d.tol && ai.errP < d.tol * 1.6) {
       if (ai.burstLeft <= 0) {
         ai.burstLeft = p.weapon === 'rifle' ? d.burst + ((Math.random() * d.burstJit) | 0)
@@ -716,7 +720,6 @@ export class GameServer extends DurableObject {
     }
 
     // --- reload discipline: top up when nobody has eyes on us
-    const w = WEAPONS[p.weapon];
     if (p.reloading <= 0 && p.mag < w.mag * 0.3 && (!vis || st === S_COVER || dist > 45)) {
       p.reloading = w.reload;
       this.events.push(['reload', p.id]);
