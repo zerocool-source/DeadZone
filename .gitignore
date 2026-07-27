@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 deadzone-pvp.zip
+
+# agent/test scratch files
+.dz-*.cjs
+.dz-*.mjs
