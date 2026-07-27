@@ -770,7 +770,7 @@ buildViewmodel('rifle');
 // --- audio -------------------------------------------------------------------
 let actx = null, master = null;
 const sndBufs = {};
-const SOUNDS = ['rifle', 'shotgun', 'hit', 'death', 'pickup', 'step', 'wind'];
+const SOUNDS = ['rifle', 'shotgun', 'hit', 'death', 'pickup', 'step', 'land', 'wind'];
 // one-pole-filtered noise burst: stands in for step/land when no file shipped
 function makeThudBuf(dur, cut, pow) {
   const n = Math.max(1, Math.floor(actx.sampleRate * dur));
@@ -956,7 +956,8 @@ function drawMinimap(now) {
 // --- net ----------------------------------------------------------------------
 const room = new URLSearchParams(location.search).get('room') ||
   Math.random().toString(36).slice(2, 7);
-history.replaceState(null, '', `?room=${room}`);
+const devFlag = new URLSearchParams(location.search).has('dev');
+history.replaceState(null, '', `?room=${room}` + (devFlag ? '&dev' : ''));
 const inviteURL = location.origin + location.pathname + '?room=' + room;
 $('invite').innerHTML =
   `<div>${STR.invite}</div><input readonly value="${inviteURL}"><button id="copy-btn">${STR.copy}</button>`;
@@ -1648,7 +1649,7 @@ let acc = 0, last = performance.now();
 addEventListener('blur', () => { held.clear(); firing = false; ads = false; });
 addEventListener('focus', () => { last = performance.now(); });
 const devEl = $('dev');
-const showDev = new URLSearchParams(location.search).has('dev');
+const showDev = devFlag;
 if (showDev) devEl.style.display = 'block';
 let frames = 0, fpsAt = performance.now();
 
@@ -1662,7 +1663,6 @@ function frame(now) {
   updateRemotes(dt, now);
   updateTracers(now);
   updatePuffs(dt);
-  updateDamageNumbers(now);
   updateLowHealth(now);
   for (const sp of cloudSprites) {
     sp.position.x += sp.userData.drift * dt;
@@ -1703,6 +1703,7 @@ function frame(now) {
   if (!me.alive) camera.position.y = me.y + 0.5;
 
   drawMinimap(now);
+  updateDamageNumbers(now); // after the camera moves, so they project cleanly
 
   // viewmodel recoil/bob, easing toward screen centre while aiming
   vmRecoil = Math.max(0, vmRecoil - dt * 7);
