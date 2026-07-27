@@ -4,8 +4,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
-import { buildWorld } from './world.js';
+import * as WORLD from './world.js';
 import { STR } from './strings.js';
+
+const buildWorld = WORLD.buildWorld;
 
 // --- constants (mirror server.js; server is authoritative) ---------------
 const WALK = 5.2, SPRINT = 7.6, CROUCH_SPEED = 2.5, GRAV = -22, JUMP_V = 7.5, PLAYER_R = 0.45;
@@ -26,6 +28,9 @@ const COL = {
   sky: 0x8a8474, fog: 0x8a8474, ground: 0x5c5a50, groundVar: 0x51544a,
   wall: 0x62625e, ruin: 0x6a675f, container: 0x6e4a33, rubble: 0x585650,
   rock: 0x4f4f4b, accent: 0x57e389, skin: 0xb8b3a2, cloth: 0x3a3d35,
+  // kinds introduced with the level rebuild — only ever seen if their model 404s
+  barrier: 0x7d7b72, car: 0x4a463f, crate: 0x6b5334, barrel: 0x6d452e,
+  tower: 0x6b675c, building: 0x6a675f,
 };
 
 // Shared scratch objects — nothing in the frame loop may allocate.
@@ -343,9 +348,17 @@ function localImpact(dirx, diry, dirz) {
       const t = rayBoxN(ox, oy, oz, rx, ry, rz, world.obstacles[i]);
       if (t < bestT && t > 0.4) { bestT = t; nx = _rayN.x; ny = _rayN.y; nz = _rayN.z; }
     }
-    if (ry < -1e-4) { // flat ground at y=0
+    if (ry < -1e-4) { // dirt at y=0, plus any deck the shot crosses first
       const tg = -oy / ry;
       if (tg < bestT && tg > 0.4) { bestT = tg; nx = 0; ny = 1; nz = 0; }
+      for (let i = 0; i < wPlatforms.length; i++) {
+        const pl = wPlatforms[i];
+        const tp = (pl.y - oy) / ry;
+        if (tp <= 0.4 || tp >= bestT) continue;
+        const hx = ox + rx * tp, hz = oz + rz * tp;
+        if (hx < pl.x1 || hx > pl.x2 || hz < pl.z1 || hz > pl.z2) continue;
+        bestT = tp; nx = 0; ny = 1; nz = 0;
+      }
     }
     if (bestT >= w.range || bestT >= enemyT) continue;
     const hx = ox + rx * bestT, hy = oy + ry * bestT, hz = oz + rz * bestT;
@@ -354,12 +367,146 @@ function localImpact(dirx, diry, dirz) {
   }
 }
 
+// --- textures ---------------------------------------------------------------
+// Basecolor (+ optional normal) out of ./assets/textures, shared between every
+// material that asks for the same file. Materials are always created with a
+// usable flat colour and only upgraded from the load callback: handing a
+// material a map that never arrives renders the surface black.
+const MAX_ANISO = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
+const _texLoader = new THREE.TextureLoader();
+const _texDone = new Map(); // file -> Texture
+const _texWait = new Map(); // file -> pending callbacks
+function loadTex(file, srgb, onOk) {
+  const done = _texDone.get(file);
+  if (done) { onOk(done); return; }
+  const waiting = _texWait.get(file);
+  if (waiting) { waiting.push(onOk); return; }
+  _texWait.set(file, [onOk]);
+  _texLoader.load(`./assets/textures/${file}.jpg`, tex => {
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = MAX_ANISO; // grazing angles on the ground are the whole game
+    if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+    _texDone.set(file, tex);
+    const cbs = _texWait.get(file) || [];
+    _texWait.delete(file);
+    for (const cb of cbs) cb(tex);
+  }, undefined, () => { _texWait.delete(file); });
+}
+// <name>.jpg as basecolor, <name>_n.jpg as normal. The two are independent so a
+// missing normal map still leaves us the diffuse.
+function texturize(mat, name, onBase) {
+  loadTex(name, true, t => {
+    mat.map = t; mat.needsUpdate = true;
+    if (onBase) onBase(t);
+  });
+  loadTex(name + '_n', false, t => { mat.normalMap = t; mat.needsUpdate = true; });
+}
+
+// --- merged textured geometry -------------------------------------------------
+// UVs come straight from world coordinates, so a 40 m wall tiles at the same
+// density as a 2 m crate and neighbouring boxes line up instead of each
+// stretching its own 0..1 patch. Everything of one material merges into a
+// single geometry: one draw call for all the concrete in the level.
+const TILE_GROUND = 4;   // metres per ground texture tile
+const TILE_STRUCT = 3;   // metres per tile on walls, decks and rocks
+// [nx,ny,nz, ux,uy,uz, vx,vy,vz, xHi,yHi,zHi] with U x V = N so the winding
+// faces outward; the *Hi flags pick the box corner the quad starts from.
+const BOX_FACES = [
+  [1, 0, 0, 0, 0, -1, 0, 1, 0, 1, 0, 1],
+  [-1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+  [0, 1, 0, 1, 0, 0, 0, 0, -1, 0, 1, 1],
+  [0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0],
+  [0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+  [0, 0, -1, 0, 1, 0, 1, 0, 0, 0, 0, 0],
+];
+function geoBuilder() {
+  const P = [], N = [], U = [], I = [];
+  return {
+    get empty() { return I.length === 0; },
+    quad(ox, oy, oz, ux, uy, uz, ul, vx, vy, vz, vl, nx, ny, nz, tile) {
+      const base = P.length / 3;
+      for (let k = 0; k < 4; k++) {
+        const a = (k === 1 || k === 2) ? ul : 0;
+        const b = (k === 2 || k === 3) ? vl : 0;
+        const x = ox + ux * a + vx * b, y = oy + uy * a + vy * b, z = oz + uz * a + vz * b;
+        P.push(x, y, z);
+        N.push(nx, ny, nz);
+        U.push((ux ? x : uy ? y : z) / tile, (vx ? x : vy ? y : z) / tile);
+      }
+      I.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    },
+    build() {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+      g.setIndex(I);
+      g.computeBoundingSphere();
+      return g;
+    },
+  };
+}
+// list entries are {x1,z1,x2,z2} plus a top (h) and an optional bottom (y1)
+function boxesGeometry(list, tile) {
+  const b = geoBuilder();
+  for (const o of list) {
+    const y1 = o.y1 || 0, y2 = o.h;
+    const dx = o.x2 - o.x1, dy = y2 - y1, dz = o.z2 - o.z1;
+    if (!(dx > 0) || !(dz > 0) || !(dy > 0)) continue;
+    for (const f of BOX_FACES) {
+      if (f[1] === -1 && y1 < 0.01) continue; // a box on the deck has no underside
+      b.quad(
+        f[9] ? o.x2 : o.x1, f[10] ? y2 : y1, f[11] ? o.z2 : o.z1,
+        f[3], f[4], f[5], f[3] ? dx : f[4] ? dy : dz,
+        f[6], f[7], f[8], f[6] ? dx : f[7] ? dy : dz,
+        f[0], f[1], f[2], tile);
+    }
+  }
+  return b.empty ? null : b.build();
+}
+function slabsGeometry(list, y, tile) {
+  const b = geoBuilder();
+  for (const q of list) {
+    const dx = q.x2 - q.x1, dz = q.z2 - q.z1;
+    if (!(dx > 0) || !(dz > 0)) continue;
+    b.quad(q.x1, y, q.z2, 1, 0, 0, dx, 0, 0, -1, dz, 0, 1, 0, tile);
+  }
+  return b.empty ? null : b.build();
+}
+
 // --- world geometry ---------------------------------------------------------
 const world = buildWorld();
+// Everything past buildWorld's original three fields is optional: this client
+// has to keep running against a world.js from either side of the level rebuild.
+const wPlatforms = Array.isArray(world.platforms) ? world.platforms : [];
+const wGround = Array.isArray(world.ground) ? world.ground : [];
+const wProps = Array.isArray(world.props) ? world.props : [];
+const wPois = Array.isArray(world.pois) ? world.pois : [];
+const wPickups = Array.isArray(world.pickups) ? world.pickups : [];
+// The server owns standing height; world.js exports the same function so
+// prediction agrees with it. A named import would hard-fail the whole module
+// while the two files are out of step, hence the lookup + local twin.
+const groundHeightAt = typeof WORLD.groundHeightAt === 'function'
+  ? WORLD.groundHeightAt : localGroundHeightAt;
+function localGroundHeightAt(x, z, w) {
+  const ps = (w && w.platforms) || wPlatforms;
+  let y = 0;
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    if (p.y > y && x >= p.x1 && x <= p.x2 && z >= p.z1 && z <= p.z2) y = p.y;
+  }
+  return y;
+}
+
 const obstaclesByKind = {};
 const boxMeshByKind = {};
+// kinds that stay as boxes: concrete for the built stuff, gravel for rock.
+// 'building' is here too — it is only a fallback, prop_building replaces it.
+const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete', rock: 'gravel' };
 {
-  // ground: vertex-jittered color patches
+  for (const b of world.obstacles) (obstaclesByKind[b.kind] ??= []).push(b);
+
+  // ground: textured dirt everywhere, world 'ground' patches proud of it
   const g = new THREE.PlaneGeometry(world.size * 2 + 8, world.size * 2 + 8, 48, 48);
   g.rotateX(-Math.PI / 2);
   const c1 = new THREE.Color(COL.ground), c2 = new THREE.Color(COL.groundVar);
@@ -371,14 +518,73 @@ const boxMeshByKind = {};
     colors.push(c.r, c.g, c.b);
   }
   g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  {
+    const pos = g.attributes.position, uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      uv[i * 2] = pos.getX(i) / TILE_GROUND;
+      uv[i * 2 + 1] = pos.getZ(i) / TILE_GROUND;
+    }
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  }
   const ground = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true }));
   scene.add(ground);
+  const dirtMat = new THREE.MeshStandardMaterial({
+    color: 0xc9c2b0, roughness: 1, metalness: 0 });
+  dirtMat.normalScale.set(0.8, 0.8);
+  texturize(dirtMat, 'dirt', () => { ground.material = dirtMat; });
 
-  // obstacles: one InstancedMesh per kind (one draw call each)
-  for (const b of world.obstacles) (obstaclesByKind[b.kind] ??= []).push(b);
+  // road / gravel patches: a couple of cm of Y plus polygonOffset keeps them off
+  // the base plane at grazing angles without reading as floating decals
+  const patchY = { asphalt: 0.022, gravel: 0.014 };
+  const patchTint = { asphalt: 0xb4b2ac, gravel: 0xc0bbae };
+  for (const mat of ['asphalt', 'gravel']) {
+    const list = wGround.filter(q => q && q.mat === mat);
+    const geo = slabsGeometry(list, patchY[mat], TILE_GROUND);
+    if (!geo) continue;
+    const m = new THREE.MeshStandardMaterial({
+      color: COL.ground, roughness: 1, metalness: 0,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    m.normalScale.set(0.8, 0.8);
+    texturize(m, mat, () => { m.color.setHex(patchTint[mat]); });
+    scene.add(new THREE.Mesh(geo, m));
+  }
+
+  // concrete: perimeter walls, ruin shells, building shells and raised decks.
+  // Walls/ruins/platforms share one geometry; buildings get their own so the
+  // GLB can retire just them.
+  const concreteMat = new THREE.MeshStandardMaterial({
+    color: COL.wall, roughness: 0.95, metalness: 0 });
+  concreteMat.normalScale.set(0.9, 0.9);
+  texturize(concreteMat, 'concrete', () => { concreteMat.color.setHex(0xa9a79e); });
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: COL.rock, roughness: 1, metalness: 0, flatShading: true });
+  texturize(rockMat, 'gravel', () => { rockMat.color.setHex(0x8e8c84); });
+
+  const structural = [];
+  for (const k of ['wall', 'ruin']) if (obstaclesByKind[k]) structural.push(...obstaclesByKind[k]);
+  // platforms are standable surfaces, not obstacles: draw them as a deck slab
+  // with an underside so a raised walkway reads as one from below
+  const DECK = 0.45;
+  for (const p of wPlatforms) {
+    if (!(p.y > 0)) continue;
+    structural.push({ x1: p.x1, z1: p.z1, x2: p.x2, z2: p.z2, y1: Math.max(0, p.y - DECK), h: p.y });
+  }
+  const structGeo = boxesGeometry(structural, TILE_STRUCT);
+  if (structGeo) scene.add(new THREE.Mesh(structGeo, concreteMat));
+  for (const [kind, tex] of Object.entries(MERGED_KINDS)) {
+    if (kind === 'wall' || kind === 'ruin') continue; // already in structGeo
+    const geo = boxesGeometry(obstaclesByKind[kind] || [], TILE_STRUCT);
+    if (!geo) continue;
+    const mesh = new THREE.Mesh(geo, tex === 'gravel' ? rockMat : concreteMat);
+    scene.add(mesh);
+    boxMeshByKind[kind] = mesh; // a prop GLB may retire it
+  }
+
+  // every other kind keeps a flat-coloured instanced box until its model lands
   const box = new THREE.BoxGeometry(1, 1, 1);
   const m4 = new THREE.Matrix4();
   for (const [kind, list] of Object.entries(obstaclesByKind)) {
+    if (MERGED_KINDS[kind]) continue;
     const mat = new THREE.MeshLambertMaterial({ color: COL[kind] ?? 0x666660, flatShading: true });
     const inst = new THREE.InstancedMesh(box, mat, list.length);
     list.forEach((b, i) => {
@@ -391,77 +597,152 @@ const boxMeshByKind = {};
     boxMeshByKind[kind] = inst;
   }
 
-  // decorative dead trees (visual only, placed clear of obstacles)
-  const trunkGeo = new THREE.CylinderGeometry(0.14, 0.24, 3.4, 5);
-  const trunks = new THREE.InstancedMesh(trunkGeo,
-    new THREE.MeshLambertMaterial({ color: 0x4a4036, flatShading: true }), 24);
-  let placed = 0, guard = 0;
-  while (placed < 24 && guard++ < 300) {
-    const x = (rnd() * 2 - 1) * (world.size - 6), z = (rnd() * 2 - 1) * (world.size - 6);
-    if (world.obstacles.some(b => x > b.x1 - 1 && x < b.x2 + 1 && z > b.z1 - 1 && z < b.z2 + 1)) continue;
-    m4.makeRotationY(rnd() * 6.28);
-    m4.setPosition(x, 1.7, z);
-    trunks.setMatrixAt(placed++, m4);
+  // legacy scatter: only when the world ships no props of its own
+  if (!wProps.length) {
+    const trunkGeo = new THREE.CylinderGeometry(0.14, 0.24, 3.4, 5);
+    const trunks = new THREE.InstancedMesh(trunkGeo,
+      new THREE.MeshLambertMaterial({ color: 0x4a4036, flatShading: true }), 24);
+    let placed = 0, guard = 0;
+    while (placed < 24 && guard++ < 300) {
+      const x = (rnd() * 2 - 1) * (world.size - 6), z = (rnd() * 2 - 1) * (world.size - 6);
+      if (world.obstacles.some(b => x > b.x1 - 1 && x < b.x2 + 1 && z > b.z1 - 1 && z < b.z2 + 1)) continue;
+      m4.makeRotationY(rnd() * 6.28);
+      m4.setPosition(x, 1.7, z);
+      trunks.setMatrixAt(placed++, m4);
+    }
+    trunks.count = placed;
+    trunks.instanceMatrix.needsUpdate = true;
+    scene.add(trunks);
   }
-  trunks.count = placed;
-  trunks.instanceMatrix.needsUpdate = true;
-  scene.add(trunks);
 }
 
-// --- prop models filling the collision boxes (optional; boxes stay if absent)
-// Each source mesh of the GLB becomes one InstancedMesh, so the whole kind
-// still costs ~1 draw call per material and the plain box mesh is retired.
+// --- prop models (optional; the boxes above stay if a GLB is absent) ---------
+// Each source mesh of the model becomes one InstancedMesh, so a whole kind
+// costs one draw call per material however many copies the level places.
+function collectMeshes(root) {
+  const srcs = [];
+  root.traverse(n => { if (n.isMesh && n.geometry) srcs.push(n); });
+  return srcs;
+}
+// normalize: centered in XZ, bottom on y=0, fitted into a 1x1x1 box
+function fitUnitBox(root) {
+  root.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(root);
+  const sx = Math.max(1e-3, bb.max.x - bb.min.x);
+  const sy = Math.max(1e-3, bb.max.y - bb.min.y);
+  const sz = Math.max(1e-3, bb.max.z - bb.min.z);
+  const swap = sz > sx; // model's long side runs along Z — turn it onto X
+  const m = new THREE.Matrix4().makeTranslation(
+    -(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
+  const tmp = new THREE.Matrix4();
+  if (swap) m.premultiply(tmp.makeRotationY(Math.PI / 2));
+  m.premultiply(tmp.makeScale(1 / (swap ? sz : sx), 1 / sy, 1 / (swap ? sx : sz)));
+  return m;
+}
+// normalize: centered in XZ, bottom on y=0, exactly 1 unit tall (uniform)
+function fitUnitHeight(root) {
+  root.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(root);
+  const s = 1 / Math.max(1e-3, bb.max.y - bb.min.y);
+  const m = new THREE.Matrix4().makeTranslation(
+    -(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
+  return m.premultiply(new THREE.Matrix4().makeScale(s, s, s));
+}
+function instanceRoot(root, norm, count, place) {
+  const srcs = collectMeshes(root);
+  if (!srcs.length || !count) return false;
+  const p = new THREE.Matrix4(), out = new THREE.Matrix4();
+  for (const src of srcs) {
+    const im = new THREE.InstancedMesh(src.geometry, src.material, count);
+    im.frustumCulled = false;
+    for (let i = 0; i < count; i++) {
+      place(i, p);
+      out.multiplyMatrices(p, norm).multiply(src.matrixWorld);
+      im.setMatrixAt(i, out);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    scene.add(im);
+  }
+  return true;
+}
+const OBSTACLE_MODELS = {
+  container: 'prop_container', rubble: 'prop_sandbags', barrier: 'prop_barrier',
+  car: 'prop_car', crate: 'prop_crate', barrel: 'prop_barrel',
+  tower: 'prop_tower', building: 'prop_building',
+};
 function instanceProp(url, kind) {
   const list = obstaclesByKind[kind];
   if (!list || !list.length) return;
+  const scratch = new THREE.Matrix4();
   new GLTFLoader().load(url, gltf => {
-    const root = gltf.scene;
-    root.updateMatrixWorld(true);
-    const bb = new THREE.Box3().setFromObject(root);
-    const sx = Math.max(1e-3, bb.max.x - bb.min.x);
-    const sy = Math.max(1e-3, bb.max.y - bb.min.y);
-    const sz = Math.max(1e-3, bb.max.z - bb.min.z);
-    const swap = sz > sx; // model's long side runs along Z — turn it onto X
-    // normalize: centered in XZ, bottom on y=0, fitted into a 1x1x1 box
-    const norm = new THREE.Matrix4().makeTranslation(
-      -(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
-    const tmp = new THREE.Matrix4();
-    if (swap) norm.premultiply(tmp.makeRotationY(Math.PI / 2));
-    norm.premultiply(tmp.makeScale(1 / (swap ? sz : sx), 1 / sy, 1 / (swap ? sx : sz)));
-
-    const srcs = [];
-    root.traverse(n => { if (n.isMesh && n.geometry) srcs.push(n); });
-    if (!srcs.length) return;
-    const obs = new THREE.Matrix4(), inst = new THREE.Matrix4();
-    for (const src of srcs) {
-      const im = new THREE.InstancedMesh(src.geometry, src.material, list.length);
-      im.frustumCulled = false;
-      for (let i = 0; i < list.length; i++) {
-        const b = list[i];
-        const w = b.x2 - b.x1, d = b.z2 - b.z1;
-        const turn = d > w;
-        // deterministic 180° flip so identical props don't all face the same way
-        const flip = ((Math.abs(b.x1 * 7.3 + b.z1 * 3.1) | 0) & 1) ? Math.PI : 0;
-        obs.makeRotationY((turn ? Math.PI / 2 : 0) + flip);
-        tmp.makeScale(turn ? d : w, b.h, turn ? w : d);
-        obs.multiply(tmp);
-        obs.setPosition((b.x1 + b.x2) / 2, 0, (b.z1 + b.z2) / 2);
-        inst.multiplyMatrices(obs, norm).multiply(src.matrixWorld);
-        im.setMatrixAt(i, inst);
-      }
-      im.instanceMatrix.needsUpdate = true;
-      scene.add(im);
-    }
+    const ok = instanceRoot(gltf.scene, fitUnitBox(gltf.scene), list.length, (i, out) => {
+      const b = list[i];
+      const w = b.x2 - b.x1, d = b.z2 - b.z1;
+      const turn = d > w;
+      // deterministic 180° flip so identical props don't all face the same way
+      const flip = ((Math.abs(b.x1 * 7.3 + b.z1 * 3.1) | 0) & 1) ? Math.PI : 0;
+      out.makeRotationY((turn ? Math.PI / 2 : 0) + flip);
+      out.multiply(scratch.makeScale(turn ? d : w, b.h, turn ? w : d));
+      out.setPosition((b.x1 + b.x2) / 2, 0, (b.z1 + b.z2) / 2);
+    });
     const boxes = boxMeshByKind[kind];
-    if (boxes) boxes.visible = false;
+    if (ok && boxes) boxes.visible = false;
   }, undefined, () => { /* keep the box rendering for this kind */ });
 }
-instanceProp('./assets/models/prop_container.glb', 'container');
-instanceProp('./assets/models/prop_sandbags.glb', 'rubble');
+for (const kind of Object.keys(OBSTACLE_MODELS)) {
+  instanceProp(`./assets/models/${OBSTACLE_MODELS[kind]}.glb`, kind);
+}
+
+// --- decoration props: world.props, no collision ------------------------------
+const DECOR_MODELS = { tree: 'prop_tree', pole: 'prop_pole' };
+const DECOR_SIZE = { tree: 6.5, pole: 7.5 }; // metres tall at s = 1
+function decorFallback(kind) {
+  const g = new THREE.Group();
+  const pole = kind === 'pole';
+  const m = new THREE.Mesh(
+    new THREE.CylinderGeometry(pole ? 0.035 : 0.045, pole ? 0.06 : 0.075, 1, 5),
+    new THREE.MeshLambertMaterial({ color: pole ? 0x544c40 : 0x4a4036, flatShading: true }));
+  m.position.y = 0.5;
+  if (pole) m.rotation.z = 0.07; // leaning utility pole
+  g.add(m);
+  return g;
+}
+{
+  const byKind = {};
+  for (const p of wProps) {
+    if (!p || typeof p.x !== 'number' || typeof p.z !== 'number') continue;
+    (byKind[p.kind] ??= []).push(p);
+  }
+  const sv = new THREE.Vector3();
+  for (const kind of Object.keys(byKind)) {
+    const list = byKind[kind];
+    const place = (i, out) => {
+      const p = list[i];
+      // s reads as a multiplier of the kind's natural height; a value only
+      // sensible as metres is taken literally so either convention works.
+      const n = typeof p.s === 'number' && p.s > 0 ? p.s : 1;
+      const h = n > 2.5 ? n : (DECOR_SIZE[kind] || 4) * n;
+      out.makeRotationY(typeof p.ry === 'number' ? p.ry : 0);
+      out.scale(sv.set(h, h, h));
+      out.setPosition(p.x, groundHeightAt(p.x, p.z, world), p.z);
+    };
+    const fallback = () => {
+      const root = decorFallback(kind);
+      instanceRoot(root, fitUnitHeight(root), list.length, place);
+    };
+    const file = DECOR_MODELS[kind];
+    if (!file) { fallback(); continue; }
+    new GLTFLoader().load(`./assets/models/${file}.glb`, g => {
+      if (!instanceRoot(g.scene, fitUnitHeight(g.scene), list.length, place)) fallback();
+    }, undefined, fallback);
+  }
+}
 
 // pickup markers
 const pickupMeshes = new Map();
-for (const pk of world.pickups) {
+const pickupById = new Map();
+for (const pk of wPickups) {
+  pickupById.set(pk.id, pk);
   const grp = new THREE.Group();
   const isHealth = pk.type === 'health';
   const body = new THREE.Mesh(
@@ -477,7 +758,8 @@ for (const pk of world.pickups) {
   const light = new THREE.PointLight(COL.accent, 4, 6);
   light.position.y = 1;
   grp.add(light);
-  grp.position.set(pk.x, 1.0, pk.z);
+  grp.userData.baseY = groundHeightAt(pk.x, pk.z, world) + 1.0;
+  grp.position.set(pk.x, grp.userData.baseY, pk.z);
   scene.add(grp);
   pickupMeshes.set(pk.id, grp);
 }
@@ -592,12 +874,22 @@ function attachAvatar(r) {
 
 // --- gun models (generated GLBs; procedural boxes as fallback) ---------------
 // tune: len = world length of the gun in view, rot = orientation fix after
-// auto-aligning the longest axis to Z, pos = grip offset in the holder.
+// auto-aligning the longest axis to Z, pos = grip offset in the holder,
+// ads = where the holder sits while aiming, adsRot = pitch applied on top of it.
+// ADS has to be per weapon: the models are all normalised to the same length, so
+// a taller sight line (the longshot's scope) ends up further below the crosshair
+// than the rifle's rail does, and one shared offset cannot frame both.
 const GUN_TUNE = {
-  rifle:    { len: 0.8,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.1] },
-  shotgun:  { len: 0.78, rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.1] },
-  longshot: { len: 1.0,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.14] },
+  rifle:    { len: 0.8,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.1],
+              ads: [0, -0.19, -0.60], adsRot: 0 },
+  shotgun:  { len: 0.78, rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.1],
+              ads: [0, -0.165, -0.58], adsRot: 0 },
+  // scope sits highest and the barrel is longest: lift it to the sight line and
+  // level out the tune's muzzle-down tilt so the tube points at the crosshair
+  longshot: { len: 1.0,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.14],
+              ads: [0, -0.09, -0.60], adsRot: 0.1 },
 };
+const ADS_FALLBACK = [0, -0.19, -0.60];
 const gunModels = {};
 {
   const gl = new GLTFLoader();
@@ -626,7 +918,7 @@ function normalizeGun(scene, weapon) {
   return wrap;
 }
 function refreshPickupVisual(weapon) {
-  for (const pk of world.pickups) {
+  for (const pk of wPickups) {
     if (pk.type !== weapon) continue;
     const grp = pickupMeshes.get(pk.id);
     if (!grp || !gunModels[weapon]) continue;
@@ -911,29 +1203,74 @@ function synthHeartbeat(vol) {
 // --- minimap ---------------------------------------------------------------
 const mmCanvas = $('minimap');
 const mmCtx = mmCanvas.getContext('2d');
+const MM = mmCanvas.width || 148;
+const MMPX = MM / (world.size * 2);
+const zoneEl = $('zone-label');
 const mmBase = document.createElement('canvas');
-mmBase.width = mmBase.height = 148;
+mmBase.width = mmBase.height = MM;
 {
   const b = mmBase.getContext('2d');
-  const S = world.size, px = 148 / (S * 2);
+  const S = world.size, px = MMPX;
+  const rect = (o, pad) => b.fillRect((o.x1 + S) * px, (o.z1 + S) * px,
+    Math.max(pad, (o.x2 - o.x1) * px), Math.max(pad, (o.z2 - o.z1) * px));
   b.fillStyle = 'rgba(30,30,34,0.9)';
-  b.fillRect(0, 0, 148, 148);
-  b.fillStyle = '#55555c';
-  for (const o of world.obstacles) {
-    b.fillRect((o.x1 + S) * px, (o.z1 + S) * px, Math.max(1, (o.x2 - o.x1) * px), Math.max(1, (o.z2 - o.z1) * px));
+  b.fillRect(0, 0, MM, MM);
+  // roads and gravel beds first: they are what makes the layout readable
+  for (const q of wGround) {
+    if (!q) continue;
+    b.fillStyle = q.mat === 'asphalt' ? '#3b3b42' : q.mat === 'gravel' ? '#4b4941' : '#3f3d37';
+    rect(q, 1);
   }
+  // raised decks read as a lighter plate under the walls
+  b.fillStyle = 'rgba(158,158,146,0.20)';
+  for (const p of wPlatforms) rect(p, 1);
+  b.fillStyle = '#55555c';
+  for (const o of world.obstacles) rect(o, 1);
+  b.strokeStyle = 'rgba(176,176,162,0.45)';
+  b.lineWidth = 1;
+  for (const p of wPlatforms) {
+    b.strokeRect((p.x1 + S) * px + 0.5, (p.z1 + S) * px + 0.5,
+      Math.max(1, (p.x2 - p.x1) * px - 1), Math.max(1, (p.z2 - p.z1) * px - 1));
+  }
+  // district labels
+  b.font = '8px "Courier New", monospace';
+  b.textAlign = 'center';
+  b.textBaseline = 'middle';
+  for (const p of wPois) {
+    if (!p || typeof p.x !== 'number') continue;
+    const tx = (p.x + S) * px, tz = (p.z + S) * px;
+    const label = String(p.name ?? '').toUpperCase().slice(0, 14);
+    b.fillStyle = 'rgba(10,10,12,0.75)';
+    b.fillText(label, tx + 1, tz + 1);
+    b.fillStyle = 'rgba(206,206,190,0.62)';
+    b.fillText(label, tx, tz);
+  }
+}
+// name of the district the local player is standing in
+let zoneShown = '';
+function updateZoneLabel() {
+  if (!zoneEl || !wPois.length) return;
+  let best = null, bestD = Infinity;
+  for (const p of wPois) {
+    const d = (p.x - me.x) * (p.x - me.x) + (p.z - me.z) * (p.z - me.z);
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  const name = best ? String(best.name ?? '') : '';
+  if (name !== zoneShown) { zoneShown = name; zoneEl.textContent = name.toUpperCase(); }
 }
 let mmLast = 0;
 function drawMinimap(now) {
   if (now - mmLast < 100 || !snapB) return;
   mmLast = now;
-  const S = world.size, px = 148 / (S * 2);
+  const S = world.size, px = MMPX;
   mmCtx.drawImage(mmBase, 0, 0);
+  updateZoneLabel();
   // pickups
   mmCtx.fillStyle = '#57e389';
   for (const [id, active] of snapB.m.pk) {
     if (!active) continue;
-    const pk = world.pickups[id];
+    const pk = pickupById.get(id);
+    if (!pk) continue;
     mmCtx.fillRect((pk.x + S) * px - 1.5, (pk.z + S) * px - 1.5, 3, 3);
   }
   // players
@@ -1040,8 +1377,10 @@ function onServerMessage(raw) {
     if (me.weapon !== weapon) { me.weapon = weapon; buildViewmodel(weapon); }
     if (wasAlive && !me.alive) onLocalDeath();
     if (!wasAlive && me.alive) { me.x = sx; me.y = sy; me.z = sz; }
-    // reconciliation: snap if server disagrees hard
-    if (me.alive && Math.hypot(sx - me.x, sz - me.z) > 2.5) { me.x = sx; me.y = sy; me.z = sz; }
+    // reconciliation: snap if server disagrees hard. Height gets its own test —
+    // a mispredicted platform edge diverges in Y long before it does in XZ.
+    if (me.alive && Math.hypot(sx - me.x, sz - me.z) > 2.5) { me.x = sx; me.y = sy; me.z = sz; me.vy = 0; }
+    else if (me.alive && Math.abs(sy - me.y) > 1.0) { me.y = sy; me.vy = 0; }
   }
 
   // pickups
@@ -1305,11 +1644,17 @@ function step(dt) {
     me.x += wx * sp * dt;
     me.z += wz * sp * dt;
   }
-  if (held.has('jump') && me.y === 0) me.vy = JUMP_V;
-  if (me.y > 0 || me.vy > 0) {
+  // vertical: the surface underfoot is 0 or the platform we are standing over.
+  // Walking off an edge just leaves me.y above the new ground, so gravity takes
+  // over on the next line instead of the player being dropped instantly.
+  let gh = groundHeightAt(me.x, me.z, world);
+  if (held.has('jump') && me.y <= gh + 0.02) me.vy = JUMP_V;
+  if (me.y > gh || me.vy > 0) {
     me.vy += GRAV * dt;
-    me.y = Math.max(0, me.y + me.vy * dt);
-    if (me.y === 0) me.vy = 0;
+    me.y += me.vy * dt;
+    if (me.y <= gh) { me.y = gh; me.vy = 0; }
+  } else if (me.y !== gh) {
+    me.y = gh; me.vy = 0;
   }
   for (const b of world.obstacles) {
     if (me.y > b.h - 0.2) continue;
@@ -1326,6 +1671,10 @@ function step(dt) {
   const S = world.size;
   me.x = Math.max(-S + 0.6, Math.min(S - 0.6, me.x));
   me.z = Math.max(-S + 0.6, Math.min(S - 0.6, me.z));
+  // collision may have pushed us over a deck edge: settle onto whatever is
+  // under the final position rather than hovering until the next tick
+  gh = groundHeightAt(me.x, me.z, world);
+  if (me.y < gh) { me.y = gh; me.vy = 0; }
 
   // send input at 20 Hz
   const now = performance.now();
@@ -1678,7 +2027,10 @@ function frame(now) {
   // pickup spin
   const t = now / 1000;
   for (const mesh of pickupMeshes.values()) {
-    if (mesh.visible) { mesh.rotation.y = t * 1.4; mesh.position.y = 1 + Math.sin(t * 2) * 0.15; }
+    if (mesh.visible) {
+      mesh.rotation.y = t * 1.4;
+      mesh.position.y = mesh.userData.baseY + Math.sin(t * 2) * 0.15;
+    }
   }
 
   // aim-down-sights / sprint field of view (only touch the projection on change)
@@ -1714,13 +2066,15 @@ function frame(now) {
   // viewmodel recoil/bob, easing toward screen centre while aiming
   vmRecoil = Math.max(0, vmRecoil - dt * 7);
   const bob = Math.sin(now / 90) * 0.008 * (moveAmt > 0.1 ? 2 : 0.6) * (1 - 0.8 * adsT);
-  // ADS slides the gun to centre and drops it just under the sight line, so it
-  // frames the crosshair instead of covering it at the narrower fov.
+  // ADS slides the gun to centre and lifts its sight line onto the crosshair,
+  // from the weapon's own offset so every gun frames it the same way.
+  const gt = GUN_TUNE[me.weapon] || GUN_TUNE.rifle;
+  const ga = gt.ads || ADS_FALLBACK;
   vmHolder.position.set(
-    0.3 + (0.0 - 0.3) * adsT,
-    -0.3 + (-0.19 + 0.3) * adsT + bob,
-    -0.62 + (-0.60 + 0.62) * adsT + vmRecoil * 0.07);
-  vmHolder.rotation.x = vmRecoil * 0.08;
+    0.3 + (ga[0] - 0.3) * adsT,
+    -0.3 + (ga[1] + 0.3) * adsT + bob,
+    -0.62 + (ga[2] + 0.62) * adsT + vmRecoil * 0.07);
+  vmHolder.rotation.x = vmRecoil * 0.08 + (gt.adsRot || 0) * adsT;
 
   renderer.render(scene, camera);
   if (showDev && (frames++, now - fpsAt >= 500)) {
@@ -1737,12 +2091,22 @@ connect();
 
 // debug handle (also used by the automated netcode tests)
 window.__dzpvp = {
-  me, remotes, world, scene, camera,
+  me, remotes, world, scene, camera, renderer, GUN_TUNE,
   get ws() { return ws; }, get snap() { return snapB; },
   get fov() { return camera.fov; }, get adsT() { return adsT; },
   get decals() { return decalIdx; },
+  get draws() { return renderer.info.render.calls; },
+  groundAt(x, z) { return groundHeightAt(x, z, world); },
   setFiring(v) { firing = v; },
   setAds(v) { ads = v; },
   hold(cmd, on) { on ? held.add(cmd) : held.delete(cmd); },
   vm(w) { buildViewmodel(w); },
+  // live ADS tuning: __dzpvp.adsTune('longshot', 0, -0.09, -0.6, 0.1)
+  adsTune(w, x, y, z, rot) {
+    const t = GUN_TUNE[w];
+    if (!t) return null;
+    t.ads = [x, y, z];
+    t.adsRot = rot || 0;
+    return t.ads;
+  },
 };
