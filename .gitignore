@@ -3,5 +3,4 @@ node_modules/
 deadzone-pvp.zip
 
 # agent/test scratch files
-.dz-*.cjs
-.dz-*.mjs
+.dz-*
