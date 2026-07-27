@@ -446,7 +446,7 @@ export class GameServer extends DurableObject {
     dx /= len; dy /= len; dz /= len;
     p.lastFire = now;
     p.mag--;
-    this.events.push(['shot', p.id, p.weapon]);
+    this.events.push(['shot', p.id, p.weapon, [+dx.toFixed(2), +dy.toFixed(2), +dz.toFixed(2)]]);
 
     const ox = p.x, oy = p.y + 1.55, oz = p.z;
     for (let n = 0; n < w.pellets; n++) {

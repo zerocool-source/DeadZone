@@ -50,6 +50,9 @@
   #sub-banner { position:absolute; left:50%; top:40%; transform:translateX(-50%); font-size:16px; color:#9a9a90; text-shadow:1px 1px 1px #000; opacity:0; transition:opacity .4s; }
 
   #damage-vignette { position:absolute; inset:0; opacity:0; background:radial-gradient(ellipse at center, rgba(120,0,0,0) 45%, rgba(150,10,10,.8) 100%); transition:opacity .3s; }
+  #dmgdir { position:absolute; left:50%; top:50%; width:0; height:0; opacity:0; transition:opacity .25s;
+    border-left:14px solid transparent; border-right:14px solid transparent; border-bottom:22px solid rgba(220,50,40,.85);
+    transform-origin:50% 90px; margin-top:-112px; }
 
   .screen { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; background:rgba(8,8,10,.93); z-index:10; font-family:'Courier New',monospace; text-align:center; }
   .screen h1 { font-size:64px; color:#a8b090; font-family:Georgia,serif; letter-spacing:10px; text-shadow:0 0 26px #4a5a30; }
@@ -78,6 +81,7 @@
 
 <div id="hud">
   <div id="damage-vignette"></div>
+  <div id="dmgdir"></div>
   <div id="crosshair"></div>
   <div id="hitmarker"></div>
   <div id="hp-wrap"><div id="hp-bar"><div id="hp-fill"></div></div><div id="hp-label"></div></div>

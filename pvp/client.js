@@ -43,9 +43,8 @@ const canvas = $('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(COL.sky);
-scene.fog = new THREE.FogExp2(COL.fog, 0.011);
-const camera = new THREE.PerspectiveCamera(75, 1, 0.05, 400);
+scene.fog = new THREE.FogExp2(COL.fog, 0.009);
+const camera = new THREE.PerspectiveCamera(75, 1, 0.05, 900);
 scene.add(camera);
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
@@ -55,10 +54,139 @@ function resize() {
 addEventListener('resize', resize); addEventListener('orientationchange', resize); resize();
 
 scene.add(new THREE.HemisphereLight(0xb0a890, 0x3a382e, 0.9));
-const sun = new THREE.DirectionalLight(0xd8cdb0, 1.4);
-sun.position.set(40, 80, 20);
+const sun = new THREE.DirectionalLight(0xe8d9b0, 1.5);
+sun.position.set(180, 220, -140);
 scene.add(sun);
-scene.add(new THREE.AmbientLight(0x8a8478, 0.35));
+scene.add(new THREE.AmbientLight(0x8a8478, 0.3));
+
+// --- sky, sun disc, clouds, mountains (all fog-exempt, pre-hazed) ----------
+const cloudSprites = [];
+{
+  // gradient sky dome: sickly amber horizon into cold grey-blue zenith
+  const skyCanvas = document.createElement('canvas');
+  skyCanvas.width = 4; skyCanvas.height = 256;
+  const sctx = skyCanvas.getContext('2d');
+  const grad = sctx.createLinearGradient(0, 256, 0, 0);
+  grad.addColorStop(0.0, '#b3a487');   // below horizon haze
+  grad.addColorStop(0.42, '#a89a80');  // horizon band
+  grad.addColorStop(0.62, '#8b8a7e');
+  grad.addColorStop(1.0, '#5f6a74');   // zenith
+  sctx.fillStyle = grad;
+  sctx.fillRect(0, 0, 4, 256);
+  const skyTex = new THREE.CanvasTexture(skyCanvas);
+  skyTex.colorSpace = THREE.SRGBColorSpace;
+  const skyDome = new THREE.Mesh(
+    new THREE.SphereGeometry(800, 24, 16),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false }));
+  skyDome.renderOrder = -3;
+  scene.add(skyDome);
+
+  // sun disc + glow, matched to the directional light
+  const sunCanvas = document.createElement('canvas');
+  sunCanvas.width = sunCanvas.height = 128;
+  const g2 = sunCanvas.getContext('2d');
+  const rg = g2.createRadialGradient(64, 64, 4, 64, 64, 64);
+  rg.addColorStop(0, 'rgba(255,244,214,1)');
+  rg.addColorStop(0.18, 'rgba(255,236,190,0.95)');
+  rg.addColorStop(0.45, 'rgba(240,214,150,0.35)');
+  rg.addColorStop(1, 'rgba(230,205,150,0)');
+  g2.fillStyle = rg;
+  g2.fillRect(0, 0, 128, 128);
+  const sunTex = new THREE.CanvasTexture(sunCanvas);
+  const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: sunTex, transparent: true, fog: false, depthWrite: false }));
+  sunSprite.scale.set(220, 220, 1);
+  sunSprite.position.set(540, 480, -420); // along the light direction
+  scene.add(sunSprite);
+
+  // soft procedural cloud billboards drifting on the wind
+  const cloudCanvas = document.createElement('canvas');
+  cloudCanvas.width = 256; cloudCanvas.height = 128;
+  const cctx = cloudCanvas.getContext('2d');
+  for (let i = 0; i < 22; i++) {
+    const cx = 40 + Math.random() * 176, cy = 45 + Math.random() * 40;
+    const r = 18 + Math.random() * 34;
+    const rg2 = cctx.createRadialGradient(cx, cy, 2, cx, cy, r);
+    rg2.addColorStop(0, 'rgba(216,210,196,0.16)');
+    rg2.addColorStop(1, 'rgba(216,210,196,0)');
+    cctx.fillStyle = rg2;
+    cctx.beginPath(); cctx.arc(cx, cy, r, 0, 7); cctx.fill();
+  }
+  const cloudTex = new THREE.CanvasTexture(cloudCanvas);
+  for (let i = 0; i < 16; i++) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: cloudTex, transparent: true, fog: false, depthWrite: false,
+      opacity: 0.5 + Math.random() * 0.4 }));
+    const a = Math.random() * Math.PI * 2;
+    const r = 180 + Math.random() * 420;
+    sp.position.set(Math.cos(a) * r, 90 + Math.random() * 130, Math.sin(a) * r);
+    const s = 140 + Math.random() * 220;
+    sp.scale.set(s, s * 0.42, 1);
+    sp.userData.drift = 1.2 + Math.random() * 2.2;
+    scene.add(sp);
+    cloudSprites.push(sp);
+  }
+
+  // mountain ring on the horizon: low-poly ridges, pre-blended into haze
+  let ms = 777 >>> 0;
+  const mrnd = () => ((ms = (ms * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const mountains = new THREE.Group();
+  const near = new THREE.Color(0x6e6a5e), far = new THREE.Color(0x8d8878);
+  for (let i = 0; i < 42; i++) {
+    const a = (i / 42) * Math.PI * 2 + mrnd() * 0.12;
+    const ring = mrnd();
+    const dist = 300 + ring * 320;
+    const h = 40 + mrnd() * 120 * (0.5 + ring * 0.8);
+    const w = 90 + mrnd() * 160;
+    const geo = new THREE.ConeGeometry(w, h, 4 + ((mrnd() * 3) | 0), 1);
+    const col = near.clone().lerp(far, ring * 0.85 + mrnd() * 0.15);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: col, fog: false, flatShading: true }));
+    m.position.set(Math.cos(a) * dist, h / 2 - 6, Math.sin(a) * dist);
+    m.rotation.y = mrnd() * Math.PI;
+    mountains.add(m);
+  }
+  mountains.renderOrder = -2;
+  scene.add(mountains);
+
+  // outer wasteland floor so the horizon gap under the mountains reads as land
+  const outer = new THREE.Mesh(new THREE.CircleGeometry(760, 48),
+    new THREE.MeshBasicMaterial({ color: 0x99917c, fog: false }));
+  outer.rotation.x = -Math.PI / 2;
+  outer.position.y = -0.4;
+  outer.renderOrder = -3;
+  scene.add(outer);
+}
+
+// --- tracers -----------------------------------------------------------------
+const tracerPool = [];
+function addTracer(from, dir, len = 46) {
+  let t = tracerPool.find(t => !t.mesh.visible);
+  if (!t) {
+    if (tracerPool.length >= 24) return;
+    const geo = new THREE.CylinderGeometry(0.015, 0.015, 1, 4, 1, true);
+    geo.translate(0, 0.5, 0);
+    geo.rotateX(Math.PI / 2); // length along +Z so lookAt aims it
+    const mesh = new THREE.Mesh(geo,
+      new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true, opacity: 0.85, fog: false, depthWrite: false }));
+    mesh.visible = false;
+    scene.add(mesh);
+    t = { mesh, until: 0 };
+    tracerPool.push(t);
+  }
+  t.mesh.position.copy(from);
+  t.mesh.lookAt(from.clone().addScaledVector(dir, 10));
+  t.mesh.scale.set(1, 1, len);
+  t.mesh.visible = true;
+  t.mesh.material.opacity = 0.85;
+  t.until = performance.now() + 90;
+}
+function updateTracers(now) {
+  for (const t of tracerPool) {
+    if (!t.mesh.visible) continue;
+    t.mesh.material.opacity = Math.max(0, (t.until - now) / 90) * 0.85;
+    if (now > t.until) t.mesh.visible = false;
+  }
+}
 
 // --- world geometry ---------------------------------------------------------
 const world = buildWorld();
@@ -547,13 +675,23 @@ function handleEvent(ev, m) {
   if (kind === 'shot') {
     if (a !== myId) {
       const pos = posOf(m, a);
-      if (pos) play(b === 'shotgun' ? 'shotgun' : 'rifle', 0.8, pos);
+      if (pos) {
+        play(b === 'shotgun' ? 'shotgun' : 'rifle', 0.8, pos);
+        if (Array.isArray(c) && c.length === 3) {
+          addTracer(new THREE.Vector3(pos.x, pos.y + 1.5, pos.z),
+            new THREE.Vector3(c[0], c[1], c[2]));
+        }
+      }
       const r = remotes.get(a);
       if (r) r.flashUntil = performance.now() + 60;
     }
   } else if (kind === 'hit') {
     if (a === myId) { hitmarker(); play('hit', 0.7); }
-    if (b === myId) { damageFlash(); play('hit', 1); }
+    if (b === myId) {
+      damageFlash(); play('hit', 1);
+      const shooter = posOf(m, a);
+      if (shooter) showDamageDir(shooter);
+    }
   } else if (kind === 'kill') {
     feed(fmt(STR.feedKilled, { a: nameOf(m, a), b: nameOf(m, b) }), a === myId || b === myId);
     const pos = posOf(m, b);
@@ -775,6 +913,9 @@ function step(dt) {
       camera.getWorldDirection(dir);
       send({ t: 'f', d: [dir.x, dir.y, dir.z] });
       play(me.weapon === 'shotgun' ? 'shotgun' : 'rifle', 1);
+      // own tracer from just below the eye so it reads as leaving the barrel
+      addTracer(new THREE.Vector3(me.x, me.y + EYE - 0.12, me.z)
+        .addScaledVector(dir, 0.8), dir);
       vmRecoil = 1;
       if (vmFlash) {
         vmFlash.visible = true; vmFlashLight.intensity = 7;
@@ -856,6 +997,17 @@ setInterval(() => {
   }
 }, 1000);
 
+// red wedge at screen center pointing toward whoever shot you
+let dmgDirT = null;
+function showDamageDir(shooter) {
+  const el = $('dmgdir');
+  const ang = Math.atan2(shooter.x - me.x, -(shooter.z - me.z)) - (-me.yaw);
+  el.style.transform = `translate(-50%,-50%) rotate(${(-ang) * 180 / Math.PI}deg)`;
+  el.style.opacity = 0.9;
+  clearTimeout(dmgDirT);
+  dmgDirT = setTimeout(() => { el.style.opacity = 0; }, 650);
+}
+
 let hitT = null;
 function hitmarker() {
   $('hitmarker').style.opacity = 1;
@@ -933,6 +1085,11 @@ function frame(now) {
   while (acc >= STEP) { step(STEP); acc -= STEP; }
 
   updateRemotes(dt);
+  updateTracers(now);
+  for (const sp of cloudSprites) {
+    sp.position.x += sp.userData.drift * dt;
+    if (sp.position.x > 650) sp.position.x = -650;
+  }
 
   // pickup spin
   const t = now / 1000;
@@ -972,7 +1129,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // kick off networking (after all module-level state above is initialized)
-$('js-note').textContent = fmt(STR.killTargetInfo, { n: killTarget });
+$('js-note').textContent = fmt(STR.killTargetInfo, { n: killTarget }) + ' · ' + STR.padNote;
 connect();
 
 // debug handle (also used by the automated netcode tests)

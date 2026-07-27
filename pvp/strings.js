@@ -34,4 +34,5 @@ export const STR = {
   touchJump: 'JMP',
   touchReload: 'RLD',
   clickToAim: 'CLICK TO TAKE AIM',
+  padNote: 'XBOX / PLAYSTATION CONTROLLER SUPPORTED — PLUG IN AND PRESS ANY BUTTON',
 };
