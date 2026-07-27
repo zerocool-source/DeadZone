@@ -119,6 +119,7 @@ for (const pk of world.pickups) {
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.7, 0.7, 0.7),
     new THREE.MeshLambertMaterial({ color: isHealth ? 0x3d5a3d : 0x44483c, flatShading: true }));
+  body.name = 'pickup-body';
   grp.add(body);
   const glow = new THREE.Mesh(
     new THREE.BoxGeometry(0.78, 0.16, 0.78),
@@ -177,6 +178,55 @@ function attachAvatar(r) {
   r.model = true;
 }
 
+// --- gun models (generated GLBs; procedural boxes as fallback) ---------------
+// tune: len = world length of the gun in view, rot = orientation fix after
+// auto-aligning the longest axis to Z, pos = grip offset in the holder.
+const GUN_TUNE = {
+  rifle:    { len: 0.8,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.1] },
+  shotgun:  { len: 0.78, rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.1] },
+  longshot: { len: 1.0,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.14] },
+};
+const gunModels = {};
+{
+  const gl = new GLTFLoader();
+  for (const w of Object.keys(GUN_TUNE)) {
+    gl.load(`./assets/models/gun_${w}.glb`, g => {
+      gunModels[w] = normalizeGun(g.scene, w);
+      if (me.weapon === w) buildViewmodel(w);
+      refreshPickupVisual(w);
+    }, undefined, () => { /* keep procedural fallback */ });
+  }
+}
+// Center the model, scale to tune.len, apply the per-gun orientation fix
+// (tuned by eye against orientation grids — Meshy output axes vary per model).
+function normalizeGun(scene, weapon) {
+  const tune = GUN_TUNE[weapon];
+  const box = new THREE.Box3().setFromObject(scene);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  scene.position.sub(center);
+  const inner = new THREE.Group();
+  inner.add(scene);
+  inner.scale.setScalar(tune.len / Math.max(size.x, size.y, size.z));
+  const wrap = new THREE.Group();
+  wrap.add(inner);
+  wrap.rotation.set(tune.rot[0], tune.rot[1], tune.rot[2]);
+  return wrap;
+}
+function refreshPickupVisual(weapon) {
+  for (const pk of world.pickups) {
+    if (pk.type !== weapon) continue;
+    const grp = pickupMeshes.get(pk.id);
+    if (!grp || !gunModels[weapon]) continue;
+    const old = grp.getObjectByName('pickup-body');
+    if (old) grp.remove(old);
+    const inst = gunModels[weapon].clone(true);
+    inst.name = 'pickup-body';
+    inst.rotation.z = 0.35;
+    grp.add(inst);
+  }
+}
+
 // --- viewmodel ---------------------------------------------------------------
 const vmHolder = new THREE.Group();
 vmHolder.position.set(0.3, -0.3, -0.62);
@@ -184,6 +234,23 @@ camera.add(vmHolder);
 let vmFlash, vmFlashLight, vmRecoil = 0;
 function buildViewmodel(weapon) {
   vmHolder.clear();
+  const tune = GUN_TUNE[weapon];
+  if (gunModels[weapon]) {
+    const g = new THREE.Group();
+    const inst = gunModels[weapon].clone(true);
+    inst.position.set(tune.pos[0], tune.pos[1], tune.pos[2]);
+    g.add(inst);
+    vmFlash = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.22),
+      new THREE.MeshBasicMaterial({ color: 0xffd080, transparent: true, opacity: 0.95, depthWrite: false }));
+    vmFlash.position.set(tune.pos[0], tune.pos[1] + 0.03, tune.pos[2] - tune.len * 0.62);
+    vmFlash.visible = false;
+    g.add(vmFlash);
+    vmFlashLight = new THREE.PointLight(0xffaa44, 0, 5);
+    vmFlashLight.position.copy(vmFlash.position);
+    g.add(vmFlashLight);
+    vmHolder.add(g);
+    return;
+  }
   const s = WEAPONS[weapon].vmSize;
   const metal = new THREE.MeshStandardMaterial({ color: 0x33352f, metalness: 0.7, roughness: 0.45 });
   const grip = new THREE.MeshStandardMaterial({ color: 0x2a241c, roughness: 0.9 });
@@ -780,4 +847,5 @@ window.__dzpvp = {
   get ws() { return ws; }, get snap() { return snapB; },
   setFiring(v) { firing = v; },
   hold(cmd, on) { on ? held.add(cmd) : held.delete(cmd); },
+  vm(w) { buildViewmodel(w); },
 };
