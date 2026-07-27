@@ -1,0 +1,12 @@
+id,role,type,description,size/ratio,style line ref,source
+cover,deploy thumbnail and marketplace card,image,key art of two infected survivors in a wasteland firefight with DEADZONE title,16:9,STYLE FORMULA,generate
+favicon,site icon and catalog card,image,cracked skull inside rifle scope crosshair emblem,1:1,STYLE FORMULA,generate
+player_avatar,remote player character model,3d-glb,reused DeadZone infected walker GLB with walk clip,~1.8m tall,STYLE FORMULA palette,reference_media[zombie_walk_b.glb]
+sfx_rifle,rifle fire report,audio,single assault rifle gunshot dry crack,1s,-,generate
+sfx_shotgun,shotgun fire report,audio,heavy pump shotgun blast,1s,-,generate
+sfx_hit,bullet impact feedback,audio,wet fleshy impact thud,1s,-,generate
+sfx_death,player death sting,audio,short guttural death cry,2s,-,generate
+sfx_pickup,weapon and health pickup confirm,audio,quick metallic rack and click,1s,-,generate
+music_combat,looping combat bed,audio,dark industrial combat loop,30s loop,-,generate
+world_props,arena set dressing,procedural-3d,flat-shaded ruins containers rubble walls rocks drawn in code,-,STYLE FORMULA,code
+viewmodel_guns,first-person weapon models,procedural-3d,low-poly rifle shotgun longshot drawn in code,-,STYLE FORMULA,code

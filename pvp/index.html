@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>DEADZONE — Wasteland PvP</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #101014; touch-action: none; }
+  canvas#c { display: block; width: 100%; height: 100%; }
+  #hud { position: fixed; inset: 0; pointer-events: none; font-family: 'Courier New', monospace; color: #cfcfc6; user-select: none; }
+
+  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 20px; height: 20px; }
+  #crosshair::before, #crosshair::after { content:''; position:absolute; background:#e8e8dd; }
+  #crosshair::before { left:50%; top:0; width:2px; height:100%; transform:translateX(-50%); }
+  #crosshair::after { top:50%; left:0; height:2px; width:100%; transform:translateY(-50%); }
+  #hitmarker { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) rotate(45deg); width:24px; height:24px; opacity:0; }
+  #hitmarker::before, #hitmarker::after { content:''; position:absolute; background:#8aff5a; }
+  #hitmarker::before { left:50%; top:0; width:3px; height:100%; transform:translateX(-50%); }
+  #hitmarker::after { top:50%; left:0; height:3px; width:100%; transform:translateY(-50%); }
+
+  #hp-wrap { position:absolute; left:24px; bottom:24px; width:220px; }
+  #hp-bar { height:14px; background:#26262c; border:1px solid #4a4a44; }
+  #hp-fill { height:100%; width:100%; background:#7da05a; transition:width .15s; }
+  #hp-label { font-size:12px; letter-spacing:2px; margin-top:4px; color:#8a8a80; }
+
+  #ammo { position:absolute; right:24px; bottom:24px; text-align:right; }
+  #ammo .mag { font-size:38px; font-weight:bold; text-shadow:2px 2px 2px #000; }
+  #weapon-name { font-size:14px; letter-spacing:2px; color:#9a9a90; }
+  #reload-hint { font-size:13px; color:#8aff5a; visibility:hidden; animation: blink .7s infinite; }
+  @keyframes blink { 50% { opacity:.2; } }
+
+  #score-strip { position:absolute; top:16px; left:50%; transform:translateX(-50%); font-size:15px; letter-spacing:2px; color:#bdbdb2; text-shadow:1px 1px 1px #000; text-align:center; }
+  #killfeed { position:absolute; top:16px; right:20px; text-align:right; font-size:13px; color:#c9c9be; text-shadow:1px 1px 1px #000; }
+  #killfeed div { margin-bottom:3px; opacity:.95; }
+  #killfeed .me { color:#8aff5a; }
+
+  #invite { position:absolute; top:16px; left:20px; font-size:12px; color:#8a8a80; pointer-events:auto; }
+  #invite input { width:210px; background:#1c1c22; color:#a5a59a; border:1px solid #3a3a40; padding:3px 6px; font-family:inherit; font-size:11px; }
+  #invite button { background:#26262c; color:#cfcfc6; border:1px solid #4a4a44; padding:3px 10px; font-family:inherit; cursor:pointer; }
+
+  #scoreboard { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(10,10,14,.92); border:1px solid #3a3a40; padding:18px 30px; display:none; min-width:340px; }
+  #scoreboard table { width:100%; border-collapse:collapse; font-size:15px; }
+  #scoreboard td, #scoreboard th { padding:4px 12px; text-align:left; }
+  #scoreboard th { color:#7a7a70; font-size:12px; letter-spacing:2px; }
+  #scoreboard .me td { color:#8aff5a; }
+
+  #center-banner { position:absolute; left:50%; top:30%; transform:translateX(-50%); font-size:34px; font-weight:bold; color:#b03030; text-shadow:0 0 20px #802020, 2px 2px 2px #000; font-family:Georgia,serif; opacity:0; transition:opacity .4s; white-space:nowrap; text-align:center; }
+  #sub-banner { position:absolute; left:50%; top:40%; transform:translateX(-50%); font-size:16px; color:#9a9a90; text-shadow:1px 1px 1px #000; opacity:0; transition:opacity .4s; }
+
+  #damage-vignette { position:absolute; inset:0; opacity:0; background:radial-gradient(ellipse at center, rgba(120,0,0,0) 45%, rgba(150,10,10,.8) 100%); transition:opacity .3s; }
+
+  .screen { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; background:rgba(8,8,10,.93); z-index:10; font-family:'Courier New',monospace; text-align:center; }
+  .screen h1 { font-size:64px; color:#a8b090; font-family:Georgia,serif; letter-spacing:10px; text-shadow:0 0 26px #4a5a30; }
+  .screen h2 { font-size:16px; color:#7a7a70; letter-spacing:6px; margin-top:-12px; }
+  .screen input { background:#1c1c22; color:#cfcfc6; border:1px solid #4a4a44; padding:10px 14px; font-family:inherit; font-size:18px; text-align:center; letter-spacing:2px; width:240px; }
+  .screen button { pointer-events:auto; cursor:pointer; font-size:19px; padding:12px 42px; background:#1a2012; color:#8aff5a; border:2px solid #44502e; font-family:inherit; letter-spacing:3px; }
+  .screen button:hover { background:#26301a; }
+  .screen .note { font-size:13px; color:#6a6a60; max-width:480px; line-height:1.7; }
+  .hidden { display:none !important; }
+
+  /* touch controls */
+  #touch-ui { display:none; }
+  body.touch #touch-ui { display:block; }
+  #stick-zone { position:absolute; left:0; bottom:0; width:45%; height:55%; pointer-events:auto; }
+  #stick-base { position:absolute; width:110px; height:110px; border:2px solid rgba(200,200,190,.25); border-radius:50%; display:none; }
+  #stick-nub { position:absolute; width:48px; height:48px; background:rgba(200,200,190,.25); border-radius:50%; display:none; }
+  .tbtn { position:absolute; pointer-events:auto; width:70px; height:70px; border-radius:50%; background:rgba(40,45,30,.55); border:2px solid rgba(138,255,90,.35); color:#cfe0b0; font-family:'Courier New',monospace; font-size:13px; display:flex; align-items:center; justify-content:center; }
+  #btn-fire { right:26px; bottom:110px; width:92px; height:92px; }
+  #btn-jump { right:140px; bottom:60px; }
+  #btn-reload { right:40px; bottom:230px; }
+  #dev { position:fixed; top:4px; right:4px; color:#0f0; font:12px monospace; display:none; z-index:20; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div id="damage-vignette"></div>
+  <div id="crosshair"></div>
+  <div id="hitmarker"></div>
+  <div id="hp-wrap"><div id="hp-bar"><div id="hp-fill"></div></div><div id="hp-label"></div></div>
+  <div id="ammo"><div id="weapon-name"></div><div class="mag"></div><div id="reload-hint"></div></div>
+  <div id="score-strip"></div>
+  <div id="killfeed"></div>
+  <div id="invite"></div>
+  <div id="scoreboard"></div>
+  <div id="center-banner"></div>
+  <div id="sub-banner"></div>
+  <div id="touch-ui">
+    <div id="stick-zone"></div>
+    <div id="stick-base"></div><div id="stick-nub"></div>
+    <div class="tbtn" id="btn-fire"></div>
+    <div class="tbtn" id="btn-jump"></div>
+    <div class="tbtn" id="btn-reload"></div>
+  </div>
+</div>
+<div id="dev"></div>
+
+<div id="join-screen" class="screen">
+  <h1 id="js-title"></h1>
+  <h2 id="js-sub"></h2>
+  <input id="name-input" maxlength="14" autocomplete="off">
+  <button id="join-btn"></button>
+  <div class="note" id="js-note"></div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./assets/vendor/three.module.js", "three/addons/": "./assets/vendor/jsm/" } }
+</script>
+<script type="module" src="./client.js"></script>
+</body>
+</html>
