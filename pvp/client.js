@@ -498,6 +498,33 @@ function localGroundHeightAt(x, z, w) {
   return y;
 }
 
+// true when no combination of same-height obstacles fills the platform's
+// footprint, i.e. the deck is a walkway hanging in the air and needs geometry
+function platformUncovered(p) {
+  const cover = [];
+  for (const b of world.obstacles) {
+    if (Math.abs(b.h - p.y) > 0.08) continue;
+    if (b.x2 <= p.x1 || b.x1 >= p.x2 || b.z2 <= p.z1 || b.z1 >= p.z2) continue;
+    cover.push(b);
+  }
+  if (!cover.length) return true;
+  const nx = Math.max(2, Math.min(10, Math.round((p.x2 - p.x1) / 1.5)));
+  const nz = Math.max(2, Math.min(10, Math.round((p.z2 - p.z1) / 1.5)));
+  for (let i = 0; i < nx; i++) {
+    const x = p.x1 + (p.x2 - p.x1) * (i + 0.5) / nx;
+    for (let j = 0; j < nz; j++) {
+      const z = p.z1 + (p.z2 - p.z1) * (j + 0.5) / nz;
+      let inside = false;
+      for (let k = 0; k < cover.length && !inside; k++) {
+        const b = cover[k];
+        inside = x >= b.x1 && x <= b.x2 && z >= b.z1 && z <= b.z2;
+      }
+      if (!inside) return true;
+    }
+  }
+  return false;
+}
+
 const obstaclesByKind = {};
 const boxMeshByKind = {};
 // kinds that stay as boxes: concrete for the built stuff, gravel for rock.
@@ -555,18 +582,19 @@ const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete',
   const concreteMat = new THREE.MeshStandardMaterial({
     color: COL.wall, roughness: 0.95, metalness: 0 });
   concreteMat.normalScale.set(0.9, 0.9);
-  texturize(concreteMat, 'concrete', () => { concreteMat.color.setHex(0xa9a79e); });
+  texturize(concreteMat, 'concrete', () => { concreteMat.color.setHex(0xd6d3c8); });
   const rockMat = new THREE.MeshStandardMaterial({
     color: COL.rock, roughness: 1, metalness: 0, flatShading: true });
   texturize(rockMat, 'gravel', () => { rockMat.color.setHex(0x8e8c84); });
 
   const structural = [];
   for (const k of ['wall', 'ruin']) if (obstaclesByKind[k]) structural.push(...obstaclesByKind[k]);
-  // platforms are standable surfaces, not obstacles: draw them as a deck slab
-  // with an underside so a raised walkway reads as one from below
+  // A platform top is normally the top face of a solid box that is already
+  // drawn (possibly several boxes butted together, as on a catwalk). Only decks
+  // with nothing under them get their own slab: two coplanar faces would z-fight.
   const DECK = 0.45;
   for (const p of wPlatforms) {
-    if (!(p.y > 0)) continue;
+    if (!(p.y > 0) || !platformUncovered(p)) continue;
     structural.push({ x1: p.x1, z1: p.z1, x2: p.x2, z2: p.z2, y1: Math.max(0, p.y - DECK), h: p.y });
   }
   const structGeo = boxesGeometry(structural, TILE_STRUCT);
@@ -1246,6 +1274,7 @@ mmBase.width = mmBase.height = MM;
     b.fillText(label, tx, tz);
   }
 }
+mmCtx.drawImage(mmBase, 0, 0); // readable before the first snapshot arrives
 // name of the district the local player is standing in
 let zoneShown = '';
 function updateZoneLabel() {

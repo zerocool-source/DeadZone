@@ -46,12 +46,17 @@ export function buildWorld() {
     add(cx + 1.4, cz + 0.6, 1.1, 1.1, 1.15, 'barrel');
     add(cx + 0.5, cz + 1.5, 1.1, 1.1, 1.15, 'barrel');
   };
-  // A climbing stack: ground -> 1.0 -> 2.0 -> the deck it is flush against.
-  // Jump apex is JUMP_V^2/(2*GRAV) = 1.28 m, so every step has to stay under
-  // that and each crate must butt exactly against the next surface.
-  const stack = (cx, cz, dx, dz) => {
-    deck(cx + dx * 1.2, cz + dz * 1.2, dx ? 2.4 : 2.6, dz ? 2.4 : 2.6, 2.0, 'crate');
-    deck(cx + dx * 3.6, cz + dz * 3.6, dx ? 2.4 : 2.6, dz ? 2.4 : 2.6, 1.0, 'crate');
+  // A stair of crates butted against a deck edge at (cx,cz), stepping away
+  // along (dx,dz): heights top, top-1 ... 1, each flush with the next. Jump
+  // apex is JUMP_V^2/(2*GRAV) = 1.28 m, so no step may be taller than that and
+  // the crates must touch exactly, or the climb breaks.
+  const stack = (cx, cz, dx, dz, top) => {
+    for (let i = 0; i < top; i++) {
+      const o = i * 2.4 + 1.2;
+      // 2.5 deep on a 2.4 pitch: every crate overlaps its neighbour by 100 mm
+      // so no float seam can open a hole in the heightfield between two steps
+      deck(cx + dx * o, cz + dz * o, dx ? 2.5 : 3, dz ? 2.5 : 3, top - i, 'crate');
+    }
   };
 
   // ---------------------------------------------------------------- perimeter
@@ -61,25 +66,22 @@ export function buildWorld() {
   add(SIZE + 1.5, 0, 3, SIZE * 2 + 6, 7, 'wall');
 
   // ------------------------------------------------------- THE TOWER (centre)
-  // 14x14 concrete plinth at 2.6 carrying the derelict water tower. The only
-  // way up is the three crate stacks; the parapet has a 2.8 m gap at each one
-  // and a stub just inside it, so nobody outside can shoot through the gap.
+  // 14x14 concrete plinth at 2.6 carrying the derelict water tower, ringed by
+  // an unbroken 1.0 m parapet. The ring is what keeps the deck honest: a body
+  // up there is covered from every ground-level sightline (only the head shows
+  // over it) and there is no hole for anyone outside to shoot through. The
+  // price is that the last move in is a vault: from the 3.0 m crate you have
+  // to be moving to clear the parapet before you drop back under 3.4.
   pois.push({ name: 'THE TOWER', x: 0, z: 0 });
   deck(0, 0, 14, 14, 2.6, 'building');
   add(0, 0, 4.2, 4.2, 9.4, 'tower');
-  add(-4.3, -6.5, 5, 0.6, 3.5, 'barrier');     // north parapet, west of the gap
-  add(4.3, -6.5, 5, 0.6, 3.5, 'barrier');      // north parapet, east of the gap
-  add(-4.3, 6.5, 5, 0.6, 3.5, 'barrier');      // south parapet
-  add(4.3, 6.5, 5, 0.6, 3.5, 'barrier');
-  add(6.5, -4.3, 0.6, 5, 3.5, 'barrier');      // east parapet
-  add(6.5, 4.3, 0.6, 5, 3.5, 'barrier');
-  add(-6.5, 0, 0.6, 13.6, 3.5, 'barrier');     // west parapet: no way in
-  add(0, -4.3, 6, 0.6, 3.5, 'barrier');        // stubs: cover on the deck and
-  add(0, 4.3, 6, 0.6, 3.5, 'barrier');         // a blind behind each entry gap
-  add(4.3, 0, 0.6, 6, 3.5, 'barrier');
-  stack(0, -7, 0, -1);                         // climb in from the north,
-  stack(7, 0, 1, 0);                           // the east
-  stack(0, 7, 0, 1);                           // and the south
+  add(0, -6.5, 13.6, 0.6, 3.6, 'barrier');
+  add(0, 6.5, 13.6, 0.6, 3.6, 'barrier');
+  add(-6.5, 0, 0.6, 13.6, 3.6, 'barrier');
+  add(6.5, 0, 0.6, 13.6, 3.6, 'barrier');
+  stack(0, -7, 0, -1, 3);                      // climb in from the north,
+  stack(7, 0, 1, 0, 3);                        // the east
+  stack(0, 7, 0, 1, 3);                        // or the south
 
   // approach cover so the four radials are not a naked run at the plinth
   add(-13, -13, 7, 1.2, 1.4, 'rubble');
@@ -111,7 +113,7 @@ export function buildWorld() {
   // catwalk: three containers butted end to end, one platform over the run
   cont(46.5, -58.6, 0); cont(46.5, -52.4, 0); cont(46.5, -46.2, 0);
   platforms.push({ x1: 45.25, z1: -61.7, x2: 47.75, z2: -43.1, y: 2.6 });
-  stack(46.5, -43.1, 0, 1);
+  stack(46.5, -43.1, 0, 1, 2);
   add(62, -70, 1.2, 6, 1.3, 'rubble');
   add(36, -60, 6, 1.2, 1.3, 'rubble');
   add(72, -58, 6, 1.2, 1.3, 'rubble');
@@ -140,7 +142,7 @@ export function buildWorld() {
   add(-56.45, -41.3, 0.9, 6.6, 3.8, 'ruin');
   add(-64, -38.45, 16, 0.9, 3.8, 'ruin');
   deck(-64, -34, 16, 8, 3.0, 'building');      // the intact wing = roof deck
-  stack(-64, -30, 0, 1);
+  stack(-64, -30, 0, 1, 2);
   // shell C "the tenement" — outer 16 x 14 at (-38,-64), doors north and west
   add(-43, -70.55, 6, 0.9, 3.4, 'ruin');
   add(-33.3, -70.55, 6.6, 0.9, 3.4, 'ruin');
@@ -238,6 +240,14 @@ export function buildWorld() {
   add(0, 46, 7, 1.3, 1.4, 'rubble');
   add(-46, 0, 1.3, 7, 1.4, 'rubble');
   add(46, 0, 1.3, 7, 1.4, 'rubble');
+  add(-74, 2, 1.3, 8, 1.4, 'rubble');
+  add(74, -2, 1.3, 8, 1.4, 'rubble');
+  add(2, -74, 8, 1.3, 1.4, 'rubble');
+  add(-2, 74, 8, 1.3, 1.4, 'rubble');
+  add(-70, -8, 2.6, 2.6, 1.6, 'rock');
+  add(70, 8, 2.6, 2.6, 1.6, 'rock');
+  add(-8, 70, 2.6, 2.6, 1.6, 'rock');
+  add(8, -70, 2.6, 2.6, 1.6, 'rock');
   add(-62, -40, 2.6, 2.6, 1.6, 'rock');
   add(62, 40, 2.6, 2.6, 1.6, 'rock');
   add(-40, 62, 2.6, 2.6, 1.6, 'rock');
@@ -270,7 +280,7 @@ export function buildWorld() {
   for (const t of treeSpots) prop('tree', t[0], t[1], 0.8, 1.5);
   const poleSpots = [
     [-3.5, -34], [3.5, -22], [-3.5, 22], [3.5, 34], [-34, 3.5], [-22, -3.5],
-    [22, 3.5], [34, -3.5], [-46, -46], [46, -46], [46, 46], [-46, 46],
+    [22, 3.5], [34, -3.5], [-41, -41], [41, -41], [41, 41], [-41, 41],
     [-80, 50], [-68, 42], [-52, 58], [-36, 42], [-26, 58],
     [30, -30], [30, 30], [-30, 30], [66, -76], [76, -66], [64, 64], [-64, 64],
     [0, -50], [0, 50], [-50, 0], [50, 0],
