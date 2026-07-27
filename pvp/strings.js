@@ -31,6 +31,7 @@ export const STR = {
   weaponNames: { rifle: 'SCAV RIFLE', shotgun: 'RIOT-12', longshot: 'LONGSHOT' },
   touchFire: 'FIRE',
   touchNade: 'NADE',
+  touchAds: 'AIM',
   touchJump: 'JMP',
   touchReload: 'RLD',
   clickToAim: 'CLICK TO TAKE AIM',

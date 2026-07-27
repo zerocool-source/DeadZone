@@ -10,10 +10,16 @@
   canvas#c { display: block; width: 100%; height: 100%; }
   #hud { position: fixed; inset: 0; pointer-events: none; font-family: 'Courier New', monospace; color: #cfcfc6; user-select: none; }
 
-  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 20px; height: 20px; }
-  #crosshair::before, #crosshair::after { content:''; position:absolute; background:#e8e8dd; }
-  #crosshair::before { left:50%; top:0; width:2px; height:100%; transform:translateX(-50%); }
-  #crosshair::after { top:50%; left:0; height:2px; width:100%; transform:translateY(-50%); }
+  /* crosshair: four independent strokes so JS can breathe the gap (--g) */
+  #crosshair { position:absolute; left:50%; top:50%; width:0; height:0; --g:5px; }
+  #crosshair i { position:absolute; background:#e8e8dd; box-shadow:0 0 2px rgba(0,0,0,.85); }
+  #crosshair .t, #crosshair .b { width:2px; height:7px; left:-1px; }
+  #crosshair .t { top:calc(-7px - var(--g)); }
+  #crosshair .b { top:var(--g); }
+  #crosshair .l, #crosshair .r { height:2px; width:7px; top:-1px; }
+  #crosshair .l { left:calc(-7px - var(--g)); }
+  #crosshair .r { left:var(--g); }
+  #crosshair .dot { width:2px; height:2px; left:-1px; top:-1px; opacity:.5; }
   #hitmarker { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) rotate(45deg); width:24px; height:24px; opacity:0; }
   #hitmarker::before, #hitmarker::after { content:''; position:absolute; background:#8aff5a; }
   #hitmarker::before { left:50%; top:0; width:3px; height:100%; transform:translateX(-50%); }
@@ -50,6 +56,14 @@
   #sub-banner { position:absolute; left:50%; top:40%; transform:translateX(-50%); font-size:16px; color:#9a9a90; text-shadow:1px 1px 1px #000; opacity:0; transition:opacity .4s; }
 
   #damage-vignette { position:absolute; inset:0; opacity:0; background:radial-gradient(ellipse at center, rgba(120,0,0,0) 45%, rgba(150,10,10,.8) 100%); transition:opacity .3s; }
+  #lowhp { position:absolute; inset:0; opacity:0; background:radial-gradient(ellipse at center, rgba(150,0,0,0) 34%, rgba(185,18,18,.9) 100%); }
+  #lowhp.on { animation:lowpulse 1.15s ease-in-out infinite; }
+  @keyframes lowpulse { 0%,100% { opacity:.14; } 50% { opacity:.46; } }
+
+  #dmgnums { position:absolute; inset:0; overflow:hidden; }
+  .dmgnum { position:absolute; left:0; top:0; display:none; font-family:'Courier New',monospace; font-weight:bold;
+    font-size:20px; color:#f0e4c6; text-shadow:1px 1px 2px #000, 0 0 8px rgba(0,0,0,.7); will-change:transform,opacity; }
+  .dmgnum.head { color:#ffd23f; font-size:27px; }
   #dmgdir { position:absolute; left:50%; top:50%; width:0; height:0; opacity:0; transition:opacity .25s;
     border-left:14px solid transparent; border-right:14px solid transparent; border-bottom:22px solid rgba(220,50,40,.85);
     transform-origin:50% 90px; margin-top:-112px; }
@@ -81,8 +95,10 @@
 
 <div id="hud">
   <div id="damage-vignette"></div>
+  <div id="lowhp"></div>
   <div id="dmgdir"></div>
-  <div id="crosshair"></div>
+  <div id="dmgnums"></div>
+  <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><i class="dot"></i></div>
   <div id="hitmarker"></div>
   <div id="hp-wrap"><div id="hp-bar"><div id="hp-fill"></div></div><div id="hp-label"></div></div>
   <div id="ammo"><div id="weapon-name"></div><div class="mag"></div><div id="reload-hint"></div></div>
@@ -100,6 +116,7 @@
     <div class="tbtn" id="btn-jump"></div>
     <div class="tbtn" id="btn-reload"></div>
     <div class="tbtn" id="btn-nade" style="right:150px;bottom:180px"></div>
+    <div class="tbtn" id="btn-ads" style="right:150px;bottom:262px"></div>
   </div>
 </div>
 <div id="dev"></div>
