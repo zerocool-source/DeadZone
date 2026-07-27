@@ -1726,9 +1726,12 @@ connect();
 
 // debug handle (also used by the automated netcode tests)
 window.__dzpvp = {
-  me, remotes, world,
+  me, remotes, world, scene, camera,
   get ws() { return ws; }, get snap() { return snapB; },
+  get fov() { return camera.fov; }, get adsT() { return adsT; },
+  get decals() { return decalIdx; },
   setFiring(v) { firing = v; },
+  setAds(v) { ads = v; },
   hold(cmd, on) { on ? held.add(cmd) : held.delete(cmd); },
   vm(w) { buildViewmodel(w); },
 };
