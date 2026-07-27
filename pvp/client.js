@@ -915,7 +915,7 @@ const GUN_TUNE = {
   // scope sits highest and the barrel is longest: lift it to the sight line and
   // level out the tune's muzzle-down tilt so the tube points at the crosshair
   longshot: { len: 1.0,  rot: [-0.12, -Math.PI / 2, 0], pos: [0, -0.02, 0.14],
-              ads: [0, -0.09, -0.60], adsRot: 0.1 },
+              ads: [0.009, -0.058, -0.60], adsRot: 0.1 },
 };
 const ADS_FALLBACK = [0, -0.19, -0.60];
 const gunModels = {};
