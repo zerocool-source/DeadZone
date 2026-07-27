@@ -36,6 +36,7 @@ $('name-input').value = localStorage.getItem('dz_name') || '';
 $('btn-fire').textContent = STR.touchFire;
 $('btn-jump').textContent = STR.touchJump;
 $('btn-reload').textContent = STR.touchReload;
+$('btn-nade').textContent = STR.touchNade;
 
 // --- renderer / scene ------------------------------------------------------
 const canvas = $('c');
@@ -321,6 +322,117 @@ function play(name, vol = 1, pos = null) {
   src.connect(g); g.connect(master); src.start();
 }
 
+// --- grenades + explosions ------------------------------------------------
+const nadeMeshes = [];
+const nadeGeo = new THREE.SphereGeometry(0.12, 8, 8);
+const nadeMat = new THREE.MeshLambertMaterial({ color: 0x2e332a });
+function syncGrenades(list) {
+  while (nadeMeshes.length < list.length) {
+    const m = new THREE.Mesh(nadeGeo, nadeMat);
+    scene.add(m);
+    nadeMeshes.push(m);
+  }
+  nadeMeshes.forEach((m, i) => {
+    if (i < list.length) { m.visible = true; m.position.set(list[i][0], list[i][1], list[i][2]); }
+    else m.visible = false;
+  });
+}
+let shakeT = 0;
+function explodeAt(x, y, z) {
+  const light = new THREE.PointLight(0xffb050, 30, 26);
+  light.position.set(x, y + 0.6, z);
+  scene.add(light);
+  const puff = new THREE.Mesh(new THREE.SphereGeometry(0.6, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0xd8c9a0, transparent: true, opacity: 0.85, depthWrite: false }));
+  puff.position.set(x, y + 0.6, z);
+  scene.add(puff);
+  const t0 = performance.now();
+  const grow = () => {
+    const t = (performance.now() - t0) / 450;
+    if (t >= 1) { scene.remove(light); scene.remove(puff); return; }
+    puff.scale.setScalar(1 + t * 7);
+    puff.material.opacity = 0.85 * (1 - t);
+    light.intensity = 30 * (1 - t);
+    requestAnimationFrame(grow);
+  };
+  grow();
+  const d = Math.hypot(x - me.x, z - me.z);
+  if (d < 30) shakeT = Math.max(shakeT, 0.35 * (1 - d / 30));
+  synthBoom(Math.max(0.1, 1 - d / 70));
+}
+function synthBoom(vol) {
+  if (!actx) return;
+  const t0 = actx.currentTime;
+  const buf = actx.createBuffer(1, actx.sampleRate * 0.7, actx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length) ** 2;
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  const f = actx.createBiquadFilter();
+  f.type = 'lowpass'; f.frequency.setValueAtTime(900, t0);
+  f.frequency.exponentialRampToValueAtTime(90, t0 + 0.6);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(Math.min(0.9, vol), t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.7);
+  src.connect(f); f.connect(g); g.connect(master);
+  src.start(t0);
+  const osc = actx.createOscillator();
+  osc.type = 'sine'; osc.frequency.setValueAtTime(60, t0);
+  osc.frequency.exponentialRampToValueAtTime(28, t0 + 0.5);
+  const g2 = actx.createGain();
+  g2.gain.setValueAtTime(vol * 0.7, t0);
+  g2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+  osc.connect(g2); g2.connect(master);
+  osc.start(t0); osc.stop(t0 + 0.6);
+}
+
+// --- minimap ---------------------------------------------------------------
+const mmCanvas = $('minimap');
+const mmCtx = mmCanvas.getContext('2d');
+const mmBase = document.createElement('canvas');
+mmBase.width = mmBase.height = 148;
+{
+  const b = mmBase.getContext('2d');
+  const S = world.size, px = 148 / (S * 2);
+  b.fillStyle = 'rgba(30,30,34,0.9)';
+  b.fillRect(0, 0, 148, 148);
+  b.fillStyle = '#55555c';
+  for (const o of world.obstacles) {
+    b.fillRect((o.x1 + S) * px, (o.z1 + S) * px, Math.max(1, (o.x2 - o.x1) * px), Math.max(1, (o.z2 - o.z1) * px));
+  }
+}
+let mmLast = 0;
+function drawMinimap(now) {
+  if (now - mmLast < 100 || !snapB) return;
+  mmLast = now;
+  const S = world.size, px = 148 / (S * 2);
+  mmCtx.drawImage(mmBase, 0, 0);
+  // pickups
+  mmCtx.fillStyle = '#57e389';
+  for (const [id, active] of snapB.m.pk) {
+    if (!active) continue;
+    const pk = world.pickups[id];
+    mmCtx.fillRect((pk.x + S) * px - 1.5, (pk.z + S) * px - 1.5, 3, 3);
+  }
+  // players
+  for (const row of snapB.m.p) {
+    if (row[6] <= 0) continue;
+    const isMe = row[0] === myId;
+    mmCtx.fillStyle = isMe ? '#8aff5a' : '#e05545';
+    mmCtx.beginPath();
+    mmCtx.arc((row[1] + S) * px, (row[3] + S) * px, isMe ? 3.4 : 2.6, 0, 7);
+    mmCtx.fill();
+    if (isMe) { // facing wedge
+      mmCtx.strokeStyle = '#8aff5a';
+      mmCtx.beginPath();
+      const a = -row[4] - Math.PI / 2;
+      mmCtx.moveTo((row[1] + S) * px, (row[3] + S) * px);
+      mmCtx.lineTo((row[1] + S) * px + Math.cos(a) * 8, (row[3] + S) * px + Math.sin(a) * 8);
+      mmCtx.stroke();
+    }
+  }
+}
+
 // --- net ----------------------------------------------------------------------
 const room = new URLSearchParams(location.search).get('room') ||
   Math.random().toString(36).slice(2, 7);
@@ -414,6 +526,7 @@ function onServerMessage(raw) {
     const mesh = pickupMeshes.get(id);
     if (mesh) mesh.visible = !!active;
   }
+  syncGrenades(m.g || []);
 
   // events
   for (const ev of m.ev) handleEvent(ev, m);
@@ -464,6 +577,8 @@ function handleEvent(ev, m) {
     feed(fmt(STR.left, { name: b }), false);
     const r = remotes.get(a);
     if (r) { scene.remove(r.group); remotes.delete(a); }
+  } else if (kind === 'boom') {
+    explodeAt(a, b, c);
   } else if (kind === 'end') {
     banner($('center-banner'), fmt(STR.matchOver, { name: b }), 6000);
   } else if (kind === 'restart') {
@@ -480,13 +595,20 @@ const held = new Set();
 const BIND = {
   KeyW: 'fwd', KeyS: 'back', KeyA: 'left', KeyD: 'right',
   ArrowUp: 'fwd', ArrowDown: 'back', ArrowLeft: 'left', ArrowRight: 'right',
-  ShiftLeft: 'sprint', ShiftRight: 'sprint', Space: 'jump', KeyR: 'reload', Tab: 'score',
+  ShiftLeft: 'sprint', ShiftRight: 'sprint', Space: 'jump', KeyR: 'reload',
+  KeyG: 'nade', Tab: 'score',
 };
+function throwNade() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  send({ t: 'g', d: [dir.x, dir.y + 0.12, dir.z] });
+}
 addEventListener('keydown', e => {
   const cmd = BIND[e.code];
   if (!cmd) return;
   e.preventDefault();
   if (cmd === 'reload') send({ t: 'r' });
+  else if (cmd === 'nade') throwNade();
   else held.add(cmd);
 });
 addEventListener('keyup', e => { const cmd = BIND[e.code]; if (cmd) held.delete(cmd); });
@@ -569,9 +691,11 @@ if (isTouch) {
   $('btn-jump').addEventListener('touchstart', e => { held.add('jump'); e.preventDefault(); }, { passive: false });
   $('btn-jump').addEventListener('touchend', e => { held.delete('jump'); e.preventDefault(); }, { passive: false });
   $('btn-reload').addEventListener('touchstart', e => { send({ t: 'r' }); e.preventDefault(); }, { passive: false });
+  $('btn-nade').addEventListener('touchstart', e => { throwNade(); e.preventDefault(); }, { passive: false });
 }
 
 // gamepad
+let padNadeLatch = false;
 function pollGamepad() {
   for (const gp of navigator.getGamepads?.() ?? []) {
     if (!gp) continue;
@@ -583,6 +707,8 @@ function pollGamepad() {
     firing = firing || (gp.buttons[7]?.pressed ?? false);
     if (gp.buttons[0]?.pressed) held.add('jump'); else if (!isTouch) held.delete('jump');
     if (gp.buttons[2]?.pressed) send({ t: 'r' });
+    if (gp.buttons[5]?.pressed && !padNadeLatch) { padNadeLatch = true; throwNade(); }
+    else if (!gp.buttons[5]?.pressed) padNadeLatch = false;
     if (gp.buttons[10]?.pressed) held.add('sprint');
   }
 }
@@ -814,12 +940,20 @@ function frame(now) {
     if (mesh.visible) { mesh.rotation.y = t * 1.4; mesh.position.y = 1 + Math.sin(t * 2) * 0.15; }
   }
 
-  // camera
+  // camera (+ explosion shake)
   camera.position.set(me.x, me.y + EYE, me.z);
   camera.rotation.set(0, 0, 0);
   camera.rotateY(me.yaw);
   camera.rotateX(me.pitch);
+  if (shakeT > 0) {
+    shakeT = Math.max(0, shakeT - dt);
+    camera.position.x += (Math.random() - 0.5) * shakeT * 0.3;
+    camera.position.y += (Math.random() - 0.5) * shakeT * 0.3;
+    camera.rotateZ((Math.random() - 0.5) * shakeT * 0.05);
+  }
   if (!me.alive) camera.position.y = me.y + 0.5;
+
+  drawMinimap(now);
 
   // viewmodel recoil/bob
   vmRecoil = Math.max(0, vmRecoil - dt * 7);

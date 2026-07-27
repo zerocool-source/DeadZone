@@ -97,6 +97,15 @@ const RESPAWN_S = 3;
 const INTERMISSION_S = 8;
 const PICKUP_RESPAWN_S = 25;
 const MAX_PLAYERS = 8;
+// bots keep rooms alive: fill to TARGET_COMBATANTS, retire as humans join
+const TARGET_COMBATANTS = 4;
+const BOT_NAMES = ['VULTURE', 'JACKAL', 'RUST', 'ASH', 'CROW', 'HOLLOW', 'GRIM'];
+const BOT_DIFFS = [
+  { aimErr: 0.10, react: 900, burst: 3 },   // easy
+  { aimErr: 0.055, react: 550, burst: 5 },  // normal
+  { aimErr: 0.03, react: 320, burst: 7 },   // hard
+];
+const GRENADE_FUSE = 2.2, GRENADE_RADIUS = 7, GRENADE_DMG = 85, GRENADE_CD = 8000;
 const WEAPONS = {
   rifle:    { dmg: 16, rpm: 540, range: 80,  pellets: 1, spread: 0.022, mag: 30, reload: 1.8 },
   shotgun:  { dmg: 9,  rpm: 85,  range: 24,  pellets: 8, spread: 0.09,  mag: 6,  reload: 2.4 },
@@ -140,6 +149,179 @@ export class GameServer extends DurableObject {
     this.phaseEndsAt = 0;
     this.nextId = 1;
     this.timer = null;
+    this.grenades = [];
+  }
+
+  // ---- bots ---------------------------------------------------------------
+  humanCount() { return this.players.size; }
+  botCount() { return [...this.byId.values()].filter(p => p.bot).length; }
+
+  balanceBots() {
+    const want = Math.max(0, Math.min(TARGET_COMBATANTS - this.humanCount(),
+      MAX_PLAYERS - this.humanCount()));
+    let have = this.botCount();
+    while (have < want) {
+      const used = new Set([...this.byId.values()].map(p => p.name));
+      const name = BOT_NAMES.find(n => !used.has(n)) || ('BOT' + this.nextId);
+      const p = this.spawnPlayer(name);
+      p.bot = true;
+      p.diff = BOT_DIFFS[(Math.random() * BOT_DIFFS.length) | 0];
+      p.ai = { wp: null, targetId: 0, sawAt: 0, burstLeft: 0, nextShotAt: 0, stuck: 0, lastX: p.x, lastZ: p.z, strafe: 1 };
+      this.byId.set(p.id, p);
+      this.events.push(['join', p.id, p.name]);
+      have++;
+    }
+    while (have > want) {
+      const bot = [...this.byId.values()].find(p => p.bot);
+      if (!bot) break;
+      this.byId.delete(bot.id);
+      this.events.push(['leave', bot.id, bot.name]);
+      have--;
+    }
+  }
+
+  // line of sight between two players' eye positions
+  los(a, b) {
+    const ox = a.x, oy = a.y + 1.55, oz = a.z;
+    let dx = b.x - ox, dy = (b.y + 1.2) - oy, dz = b.z - oz;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-6) return true;
+    dx /= dist; dy /= dist; dz /= dist;
+    for (const bx of this.world.obstacles) {
+      if (rayBox(ox, oy, oz, dx, dy, dz, bx) < dist) return false;
+    }
+    return true;
+  }
+
+  botThink(p, dt, now) {
+    const ai = p.ai;
+    // acquire nearest visible enemy
+    let target = this.byId.get(ai.targetId);
+    if (!target || target.hp <= 0 || target.id === p.id) { target = null; ai.targetId = 0; }
+    if (!target || Math.random() < 0.05) {
+      let bestD = 65;
+      for (const o of this.byId.values()) {
+        if (o === p || o.hp <= 0) continue;
+        const d = Math.hypot(o.x - p.x, o.z - p.z);
+        if (d < bestD && this.los(p, o)) { bestD = d; target = o; }
+      }
+      if (target && ai.targetId !== target.id) {
+        ai.targetId = target.id;
+        ai.sawAt = now;
+        ai.burstLeft = 0;
+      }
+    }
+
+    if (target && this.los(p, target)) {
+      // face target (with per-difficulty wobble), strafe, fire in bursts
+      const dx = target.x - p.x, dz = target.z - p.z;
+      const dist = Math.hypot(dx, dz);
+      p.yaw = Math.atan2(-dx, -dz);
+      p.input.mx = ai.strafe * (dist < 30 ? 0.7 : 0.25);
+      p.input.mz = dist > 22 ? 0.8 : (dist < 9 ? -0.5 : 0);
+      p.input.sprint = dist > 30;
+      if (Math.random() < 0.01) ai.strafe = -ai.strafe;
+      if (now - ai.sawAt > p.diff.react && now >= ai.nextShotAt && this.phase === 'play') {
+        const ex = (Math.random() - 0.5) * 2 * p.diff.aimErr * (1 + dist / 60);
+        const ey = (Math.random() - 0.5) * 2 * p.diff.aimErr;
+        const dy = (target.y + 1.1) - (p.y + 1.55);
+        const len = Math.hypot(dx, dy, dz);
+        this.fire(p, [dx / len + ex, dy / len + ey, dz / len + ex * 0.5]);
+        if (--ai.burstLeft <= 0) {
+          ai.burstLeft = p.diff.burst;
+          ai.nextShotAt = now + 420 + Math.random() * 500;
+        }
+      }
+    } else {
+      // roam: walk toward a waypoint (spawns/pickups), re-pick when reached/stuck
+      if (!ai.wp || Math.hypot(ai.wp.x - p.x, ai.wp.z - p.z) < 3) {
+        const pool = [...this.world.spawns, ...this.world.pickups];
+        ai.wp = pool[(Math.random() * pool.length) | 0];
+      }
+      const dx = ai.wp.x - p.x, dz = ai.wp.z - p.z;
+      p.yaw = Math.atan2(-dx, -dz);
+      p.input.mx = 0; p.input.mz = 0.85; p.input.sprint = Math.random() < 0.4;
+      // stuck detection: barely moved for ~1.5s → new waypoint + sidestep
+      if (Math.hypot(p.x - ai.lastX, p.z - ai.lastZ) < 0.4 * dt * 10) ai.stuck += dt;
+      else ai.stuck = 0;
+      ai.lastX = p.x; ai.lastZ = p.z;
+      if (ai.stuck > 1.5) { ai.wp = null; ai.stuck = 0; p.yaw += Math.PI / 2; }
+    }
+  }
+
+  // ---- grenades -----------------------------------------------------------
+  throwGrenade(p, d) {
+    const now = Date.now();
+    if (p.hp <= 0 || this.phase !== 'play') return;
+    if (now - (p.lastNade || 0) < GRENADE_CD) return;
+    if (!Array.isArray(d) || d.length !== 3 || d.some(v => !Number.isFinite(v))) return;
+    let [dx, dy, dz] = d;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-6) return;
+    dx /= len; dy /= len; dz /= len;
+    p.lastNade = now;
+    const SPEED = 16;
+    this.grenades.push({
+      x: p.x + dx * 0.6, y: p.y + 1.5, z: p.z + dz * 0.6,
+      vx: dx * SPEED, vy: dy * SPEED + 3.5, vz: dz * SPEED,
+      fuse: GRENADE_FUSE, owner: p.id,
+    });
+    this.events.push(['nade', p.id]);
+  }
+
+  tickGrenades(dt) {
+    for (let i = this.grenades.length - 1; i >= 0; i--) {
+      const g = this.grenades[i];
+      g.fuse -= dt;
+      g.vy += GRAV * dt;
+      g.x += g.vx * dt; g.y += g.vy * dt; g.z += g.vz * dt;
+      if (g.y <= 0.12 && g.vy < 0) { g.y = 0.12; g.vy = -g.vy * 0.45; g.vx *= 0.7; g.vz *= 0.7; }
+      // wall bounce: push out of AABBs, reflect the bigger axis velocity
+      for (const b of this.world.obstacles) {
+        if (g.y > b.h) continue;
+        const nx = Math.max(b.x1, Math.min(g.x, b.x2));
+        const nz = Math.max(b.z1, Math.min(g.z, b.z2));
+        const ddx = g.x - nx, ddz = g.z - nz;
+        const d2 = ddx * ddx + ddz * ddz;
+        if (d2 < 0.04 && d2 > 1e-9) {
+          const dist = Math.sqrt(d2);
+          g.x = nx + (ddx / dist) * 0.2; g.z = nz + (ddz / dist) * 0.2;
+          if (Math.abs(ddx) > Math.abs(ddz)) g.vx = -g.vx * 0.5; else g.vz = -g.vz * 0.5;
+        }
+      }
+      const S = this.world.size;
+      g.x = Math.max(-S + 0.3, Math.min(S - 0.3, g.x));
+      g.z = Math.max(-S + 0.3, Math.min(S - 0.3, g.z));
+      if (g.fuse <= 0) {
+        this.grenades.splice(i, 1);
+        this.events.push(['boom', +g.x.toFixed(1), +g.y.toFixed(1), +g.z.toFixed(1)]);
+        const owner = this.byId.get(g.owner);
+        for (const o of this.byId.values()) {
+          if (o.hp <= 0) continue;
+          const d = Math.hypot(o.x - g.x, (o.y + 1) - g.y, o.z - g.z);
+          if (d > GRENADE_RADIUS) continue;
+          // half damage through walls
+          const blocked = !this.losPoint(g.x, Math.max(0.4, g.y), g.z, o);
+          const dmg = Math.round(GRENADE_DMG * (1 - d / GRENADE_RADIUS) * (blocked ? 0.35 : 1));
+          if (dmg <= 0) continue;
+          o.hp -= dmg;
+          this.events.push(['hit', g.owner, o.id, dmg, 0]);
+          if (o.hp <= 0 && owner && owner !== o) this.onKill(owner, o);
+          else if (o.hp <= 0) { o.hp = 0; o.deaths++; o.respawn = RESPAWN_S; this.events.push(['kill', o.id, o.id, 'grenade']); }
+        }
+      }
+    }
+  }
+
+  losPoint(x, y, z, o) {
+    let dx = o.x - x, dy = (o.y + 1) - y, dz = o.z - z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-6) return true;
+    dx /= dist; dy /= dist; dz /= dist;
+    for (const b of this.world.obstacles) {
+      if (rayBox(x, y, z, dx, dy, dz, b) < dist) return false;
+    }
+    return true;
   }
 
   fetch(request) {
@@ -173,6 +355,7 @@ export class GameServer extends DurableObject {
       try {
         ws.send(JSON.stringify({ t: 'w', id: player.id, killTarget: KILL_TARGET }));
       } catch {}
+      this.balanceBots();
       this.startTicking();
       return;
     }
@@ -188,6 +371,8 @@ export class GameServer extends DurableObject {
       p.pitch = Math.max(-1.55, Math.min(1.55, num(m.pitch)));
     } else if (m.t === 'f') {                        // fire
       this.fire(p, m.d);
+    } else if (m.t === 'g') {                        // grenade
+      this.throwGrenade(p, m.d);
     } else if (m.t === 'r') {                        // reload
       const w = WEAPONS[p.weapon];
       if (p.hp > 0 && !p.reloading && p.mag < w.mag) {
@@ -204,9 +389,13 @@ export class GameServer extends DurableObject {
       this.byId.delete(p.id);
       this.events.push(['leave', p.id, p.name]);
     }
-    if (this.players.size === 0 && this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (this.players.size === 0) {
+      // room empty: drop bots and stop the clock
+      for (const b of [...this.byId.values()]) if (b.bot) this.byId.delete(b.id);
+      this.grenades = [];
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    } else {
+      this.balanceBots();
     }
   }
 
@@ -307,6 +496,11 @@ export class GameServer extends DurableObject {
   tick() {
     const dt = TICK_MS / 1000;
     const now = Date.now();
+
+    for (const p of this.byId.values()) {
+      if (p.bot && p.hp > 0) this.botThink(p, dt, now);
+    }
+    this.tickGrenades(dt);
 
     // match reset
     if (this.phase === 'over' && now >= this.phaseEndsAt) {
@@ -412,6 +606,7 @@ export class GameServer extends DurableObject {
         +(p.reloading > 0), p.name,
       ]),
       pk: this.pickups.map(pk => [pk.id, +pk.active]),
+      g: this.grenades.map(g => [+g.x.toFixed(2), +g.y.toFixed(2), +g.z.toFixed(2)]),
       ev: this.events,
     });
     this.events = [];

@@ -30,6 +30,7 @@ export const STR = {
   pickedHealth: '+50 HP',
   weaponNames: { rifle: 'SCAV RIFLE', shotgun: 'RIOT-12', longshot: 'LONGSHOT' },
   touchFire: 'FIRE',
+  touchNade: 'NADE',
   touchJump: 'JMP',
   touchReload: 'RLD',
   clickToAim: 'CLICK TO TAKE AIM',
