@@ -526,12 +526,25 @@ function platformUncovered(p) {
 }
 
 const obstaclesByKind = {};
+const propBoxes = {};       // boxes near enough the model's size to wear it
+const bulkBoxes = [];       // the rest: drawn as textured concrete instead
 const boxMeshByKind = {};
+// instanceProp stretches ONE model to fill the whole box, so a box far from the
+// size the model was authored at reads as a smeared blob rather than a prop.
+// Past these it is architecture (the 14 m plinth, the 13.6 m parapet run), and
+// architecture belongs with the walls and ruins. [maxWidth, maxHeight, maxDepth]
+const PROP_MAX = { building: [0, 0, 0], barrier: [6, 2.2, 6] };
 // kinds that stay as boxes: concrete for the built stuff, gravel for rock.
-// 'building' is here too — it is only a fallback, prop_building replaces it.
+// 'building' is here because every building in this level is over PROP_MAX and
+// so never wears prop_building; a small one still would.
 const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete', rock: 'gravel' };
 {
-  for (const b of world.obstacles) (obstaclesByKind[b.kind] ??= []).push(b);
+  for (const b of world.obstacles) {
+    (obstaclesByKind[b.kind] ??= []).push(b);
+    const lim = PROP_MAX[b.kind];
+    if (lim && (b.x2 - b.x1 > lim[0] || b.h > lim[1] || b.z2 - b.z1 > lim[2])) bulkBoxes.push(b);
+    else (propBoxes[b.kind] ??= []).push(b);
+  }
 
   // ground: textured dirt everywhere, world 'ground' patches proud of it
   const g = new THREE.PlaneGeometry(world.size * 2 + 8, world.size * 2 + 8, 48, 48);
@@ -589,6 +602,7 @@ const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete',
 
   const structural = [];
   for (const k of ['wall', 'ruin']) if (obstaclesByKind[k]) structural.push(...obstaclesByKind[k]);
+  structural.push(...bulkBoxes);
   // A platform top is normally the top face of a solid box that is already
   // drawn (possibly several boxes butted together, as on a catwalk). Only decks
   // with nothing under them get their own slab: two coplanar faces would z-fight.
@@ -601,7 +615,7 @@ const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete',
   if (structGeo) scene.add(new THREE.Mesh(structGeo, concreteMat));
   for (const [kind, tex] of Object.entries(MERGED_KINDS)) {
     if (kind === 'wall' || kind === 'ruin') continue; // already in structGeo
-    const geo = boxesGeometry(obstaclesByKind[kind] || [], TILE_STRUCT);
+    const geo = boxesGeometry(propBoxes[kind] || [], TILE_STRUCT);
     if (!geo) continue;
     const mesh = new THREE.Mesh(geo, tex === 'gravel' ? rockMat : concreteMat);
     scene.add(mesh);
@@ -611,7 +625,7 @@ const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete',
   // every other kind keeps a flat-coloured instanced box until its model lands
   const box = new THREE.BoxGeometry(1, 1, 1);
   const m4 = new THREE.Matrix4();
-  for (const [kind, list] of Object.entries(obstaclesByKind)) {
+  for (const [kind, list] of Object.entries(propBoxes)) {
     if (MERGED_KINDS[kind]) continue;
     const mat = new THREE.MeshLambertMaterial({ color: COL[kind] ?? 0x666660, flatShading: true });
     const inst = new THREE.InstancedMesh(box, mat, list.length);
@@ -699,7 +713,7 @@ const OBSTACLE_MODELS = {
   tower: 'prop_tower', building: 'prop_building',
 };
 function instanceProp(url, kind) {
-  const list = obstaclesByKind[kind];
+  const list = propBoxes[kind];
   if (!list || !list.length) return;
   const scratch = new THREE.Matrix4();
   new GLTFLoader().load(url, gltf => {
@@ -783,9 +797,9 @@ for (const pk of wPickups) {
     new THREE.MeshBasicMaterial({ color: COL.accent }));
   glow.position.y = 0;
   grp.add(glow);
-  const light = new THREE.PointLight(COL.accent, 4, 6);
-  light.position.y = 1;
-  grp.add(light);
+  // no PointLight here on purpose: the unlit glow slab already reads as a
+  // marker, and nine extra lights cost a full GGX evaluation per fragment of
+  // every standard-material surface in the world
   grp.userData.baseY = groundHeightAt(pk.x, pk.z, world) + 1.0;
   grp.position.set(pk.x, grp.userData.baseY, pk.z);
   scene.add(grp);
@@ -1160,24 +1174,40 @@ function syncGrenades(list) {
   });
 }
 let shakeT = 0;
+// One light and one puff, built once and never removed. Adding or removing a
+// PointLight changes the scene's light count, which is baked into every lit
+// material's program cache key — a blast would otherwise recompile every
+// standard material in the world twice.
+const boomLight = new THREE.PointLight(0xffb050, 0, 26);
+boomLight.position.set(0, -50, 0);
+scene.add(boomLight);
+const boomPuff = new THREE.Mesh(new THREE.SphereGeometry(0.6, 10, 10),
+  new THREE.MeshBasicMaterial({ color: 0xd8c9a0, transparent: true, opacity: 0, depthWrite: false }));
+boomPuff.visible = false;
+scene.add(boomPuff);
+let boomT0 = 0, boomRunning = false;
 function explodeAt(x, y, z) {
-  const light = new THREE.PointLight(0xffb050, 30, 26);
-  light.position.set(x, y + 0.6, z);
-  scene.add(light);
-  const puff = new THREE.Mesh(new THREE.SphereGeometry(0.6, 10, 10),
-    new THREE.MeshBasicMaterial({ color: 0xd8c9a0, transparent: true, opacity: 0.85, depthWrite: false }));
-  puff.position.set(x, y + 0.6, z);
-  scene.add(puff);
-  const t0 = performance.now();
-  const grow = () => {
-    const t = (performance.now() - t0) / 450;
-    if (t >= 1) { scene.remove(light); scene.remove(puff); return; }
-    puff.scale.setScalar(1 + t * 7);
-    puff.material.opacity = 0.85 * (1 - t);
-    light.intensity = 30 * (1 - t);
-    requestAnimationFrame(grow);
-  };
-  grow();
+  boomLight.position.set(x, y + 0.6, z);
+  boomPuff.position.set(x, y + 0.6, z);
+  boomPuff.visible = true;
+  boomT0 = performance.now();
+  if (!boomRunning) {
+    boomRunning = true;
+    const grow = () => {
+      const t = (performance.now() - boomT0) / 450;
+      if (t >= 1) {
+        boomRunning = false;
+        boomLight.intensity = 0;
+        boomPuff.visible = false;
+        return;
+      }
+      boomPuff.scale.setScalar(1 + t * 7);
+      boomPuff.material.opacity = 0.85 * (1 - t);
+      boomLight.intensity = 30 * (1 - t);
+      requestAnimationFrame(grow);
+    };
+    grow();
+  }
   const d = Math.hypot(x - me.x, z - me.z);
   if (d < 30) shakeT = Math.max(shakeT, 0.35 * (1 - d / 30));
   synthBoom(Math.max(0.1, 1 - d / 70));
@@ -1407,9 +1437,12 @@ function onServerMessage(raw) {
     if (wasAlive && !me.alive) onLocalDeath();
     if (!wasAlive && me.alive) { me.x = sx; me.y = sy; me.z = sz; }
     // reconciliation: snap if server disagrees hard. Height gets its own test —
-    // a mispredicted platform edge diverges in Y long before it does in XZ.
+    // a mispredicted platform edge diverges in Y long before it does in XZ —
+    // but only while both sides agree we are standing on something. Mid-jump
+    // the client is legitimately up to a jump-height above the last snapshot,
+    // and correcting there cuts every single jump short.
     if (me.alive && Math.hypot(sx - me.x, sz - me.z) > 2.5) { me.x = sx; me.y = sy; me.z = sz; me.vy = 0; }
-    else if (me.alive && Math.abs(sy - me.y) > 1.0) { me.y = sy; me.vy = 0; }
+    else if (me.alive && me.vy === 0 && !(row[14] & 8) && Math.abs(sy - me.y) > 0.5) { me.y = sy; }
   }
 
   // pickups
@@ -1664,6 +1697,10 @@ function step(dt) {
   if (!joined || !me.alive) return;
   const { mx, mz } = inputVector();
   const l = Math.hypot(mx, mz);
+  // Sampled BEFORE the horizontal move and with the server's exact tolerance:
+  // the server decides "grounded" at the pre-move position, so testing the
+  // post-move one denies jumps the server grants and diverges by metres.
+  const grounded = me.y <= groundHeightAt(me.x, me.z, world) + 1e-4;
   if (l > 0.01) {
     const nx = mx / Math.max(1, l), nz = mz / Math.max(1, l);
     const sin = Math.sin(me.yaw), cos = Math.cos(me.yaw);
@@ -1677,7 +1714,7 @@ function step(dt) {
   // Walking off an edge just leaves me.y above the new ground, so gravity takes
   // over on the next line instead of the player being dropped instantly.
   let gh = groundHeightAt(me.x, me.z, world);
-  if (held.has('jump') && me.y <= gh + 0.02) me.vy = JUMP_V;
+  if (held.has('jump') && grounded) me.vy = JUMP_V;
   if (me.y > gh || me.vy > 0) {
     me.vy += GRAV * dt;
     me.y += me.vy * dt;
@@ -1695,6 +1732,15 @@ function step(dt) {
       const dist = Math.sqrt(d2);
       me.x = nx + (dx / dist) * PLAYER_R;
       me.z = nz + (dz / dist) * PLAYER_R;
+    } else if (d2 <= 1e-9) {
+      // inside the box: same nearest-face escape the server uses, or prediction
+      // and the server disagree by the width of whatever we are stuck in
+      const dw = me.x - b.x1, de = b.x2 - me.x, dn = me.z - b.z1, ds = b.z2 - me.z;
+      const mn = Math.min(dw, de, dn, ds);
+      if (mn === dw) me.x = b.x1 - PLAYER_R;
+      else if (mn === de) me.x = b.x2 + PLAYER_R;
+      else if (mn === dn) me.z = b.z1 - PLAYER_R;
+      else me.z = b.z2 + PLAYER_R;
     }
   }
   const S = world.size;
@@ -1748,7 +1794,7 @@ function ensureRemote(id, name, hp) {
     nameSprite: null, avatarInst: null, mixer: null, action: null,
     tplKey: '', epoch: -1, handBone: null,
     gunHolder: null, gunWeapon: '', gunModelled: false, muzzle: null,
-    flashLight: null, flashUntil: 0,
+    flashUntil: 0,
     animSpeed: 0, crouchT: 0, phase: (id * 1.7) % 6.283,
     alive: hp > 0, deadAt: 0, corpseY: 0,
     toppleDir: (id % 2) ? 1 : -1,
@@ -1756,17 +1802,19 @@ function ensureRemote(id, name, hp) {
   r.group.add(r.body);
   r.nameSprite = makeNameSprite(name);
   r.group.add(r.nameSprite);
-  r.flashLight = new THREE.PointLight(0xffaa44, 0, 6);
-  r.flashLight.position.y = 1.5;
-  r.group.add(r.flashLight);
   attachAvatar(r);
   scene.add(r.group);
   remotes.set(id, r);
   return r;
 }
 
+// permanent, so the scene's point-light count never changes at runtime
+const remoteFlash = new THREE.PointLight(0xffaa44, 0, 6);
+remoteFlash.position.set(0, -50, 0);
+scene.add(remoteFlash);
 function updateRemotes(dt, now) {
   if (!snapB) return;
+  let flashBest = 0;
   const renderAt = now - INTERP_DELAY;
   const [A, B] = snapA && snapA.at < snapB.at ? [snapA, snapB] : [snapB, snapB];
   const span = Math.max(1, B.at - A.at);
@@ -1803,8 +1851,9 @@ function updateRemotes(dt, now) {
       const age = now - r.deadAt;
       r.group.visible = age < CORPSE_MS;
       r.nameSprite.visible = false;
-      // bodies never hang in the air: drop the corpse as it topples
-      r.corpseY = Math.max(0, r.corpseY - dt * 7);
+      // bodies never hang in the air: drop the corpse as it topples, but onto
+      // the surface it died on — clamping to 0 buries it inside a deck
+      r.corpseY = Math.max(groundHeightAt(x, z, world), r.corpseY - dt * 7);
       r.group.position.set(x, r.corpseY, z);
       const k = Math.min(1, age / TOPPLE_MS);
       topple = r.toppleDir * (Math.PI / 2) * k * k;
@@ -1842,8 +1891,15 @@ function updateRemotes(dt, now) {
       r.gunHolder.quaternion.copy(_q1.invert()).multiply(_q2).multiply(_qGunFlip);
     }
     if (r.muzzle) r.muzzle.visible = now < r.flashUntil;
-    r.flashLight.intensity = now < r.flashUntil ? 6 : 0;
+    // one shared muzzle light, parked on whoever fired most recently: a light
+    // per remote would make the scene's light count churn as players join and
+    // leave, recompiling every lit material each time
+    if (now < r.flashUntil && r.flashUntil > flashBest) {
+      flashBest = r.flashUntil;
+      remoteFlash.position.set(x, y + 1.5, z);
+    }
   }
+  remoteFlash.intensity = flashBest > now ? 6 : 0;
   for (const [id, r] of remotes) {
     if (!remoteSeen.has(id)) { scene.remove(r.group); remotes.delete(id); }
   }

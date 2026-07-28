@@ -36,10 +36,15 @@ export function buildWorld() {
   // repeated furniture, so the coordinates below read as a layout and not as maths
   const cont = (cx, cz, alongX) =>
     add(cx, cz, alongX ? 6.2 : 2.5, alongX ? 2.5 : 6.2, 2.6, 'container');
+  // 1.85 clears a 1.55 standing eye, so a wreck actually breaks a sightline
+  // instead of sitting in the dead band where it blocks movement but nothing else
   const car = (cx, cz, alongX) =>
-    add(cx, cz, alongX ? 4.6 : 2.1, alongX ? 2.1 : 4.6, 1.5, 'car');
+    add(cx, cz, alongX ? 4.6 : 2.1, alongX ? 2.1 : 4.6, 1.85, 'car');
   const jersey = (cx, cz, alongX) =>
     add(cx, cz, alongX ? 3.8 : 0.7, alongX ? 0.7 : 3.8, 1.15, 'barrier');
+  // same footprint as a jersey, tall enough to hide a standing body behind
+  const hesco = (cx, cz, alongX) =>
+    add(cx, cz, alongX ? 3.8 : 0.7, alongX ? 0.7 : 3.8, 1.9, 'barrier');
   const sandbag = (cx, cz, w, d) => add(cx, cz, w, d, 1.05, 'rubble');
   const barrels = (cx, cz) => {
     add(cx, cz, 1.1, 1.1, 1.15, 'barrel');
@@ -50,12 +55,16 @@ export function buildWorld() {
   // along (dx,dz): heights top, top-1 ... 1, each flush with the next. Jump
   // apex is JUMP_V^2/(2*GRAV) = 1.28 m, so no step may be taller than that and
   // the crates must touch exactly, or the climb breaks.
-  const stack = (cx, cz, dx, dz, top) => {
+  // `wide` is the cross-axis size: it has to match the thing being climbed, or
+  // the overhanging lip sits inside the neighbour's push radius and a step onto
+  // it shoves the body back off the crate.
+  const stack = (cx, cz, dx, dz, top, wide) => {
+    const w = wide || 3;
     for (let i = 0; i < top; i++) {
       const o = i * 2.4 + 1.2;
       // 2.5 deep on a 2.4 pitch: every crate overlaps its neighbour by 100 mm
       // so no float seam can open a hole in the heightfield between two steps
-      deck(cx + dx * o, cz + dz * o, dx ? 2.5 : 3, dz ? 2.5 : 3, top - i, 'crate');
+      deck(cx + dx * o, cz + dz * o, dx ? 2.5 : w, dz ? 2.5 : w, top - i, 'crate');
     }
   };
 
@@ -72,16 +81,22 @@ export function buildWorld() {
   // over it) and there is no hole for anyone outside to shoot through. The
   // price is that the last move in is a vault: from the 3.0 m crate you have
   // to be moving to clear the parapet before you drop back under 3.4.
+  // The parapet cap is standable. A jump from the deck (apex 3.88) clears the
+  // ring's collision top of 3.4, so a body WILL end up over the cap; if the cap
+  // were not a floor it would land inside a solid box and have to be shoved out
+  // of it, which throws it off the tower.
   pois.push({ name: 'THE TOWER', x: 0, z: 0 });
   deck(0, 0, 14, 14, 2.6, 'building');
   add(0, 0, 4.2, 4.2, 9.4, 'tower');
-  add(0, -6.5, 13.6, 0.6, 3.6, 'barrier');
-  add(0, 6.5, 13.6, 0.6, 3.6, 'barrier');
-  add(-6.5, 0, 0.6, 13.6, 3.6, 'barrier');
-  add(6.5, 0, 0.6, 13.6, 3.6, 'barrier');
-  stack(0, -7, 0, -1, 3);                      // climb in from the north,
-  stack(7, 0, 1, 0, 3);                        // the east
-  stack(0, 7, 0, 1, 3);                        // or the south
+  deck(0, -6.5, 13.6, 0.6, 3.6, 'barrier');
+  deck(0, 6.5, 13.6, 0.6, 3.6, 'barrier');
+  deck(-6.5, 0, 0.6, 13.6, 3.6, 'barrier');
+  deck(6.5, 0, 0.6, 13.6, 3.6, 'barrier');
+  // butted flush against the parapet face: a gap here reads as deck height,
+  // and a body standing in it is inside the crate box and gets ejected
+  stack(0, -6.85, 0, -1, 3);                   // climb in from the north,
+  stack(6.85, 0, 1, 0, 3);                     // the east
+  stack(0, 6.85, 0, 1, 3);                     // or the south
 
   // approach cover so the four radials are not a naked run at the plinth
   add(-13, -13, 7, 1.2, 1.4, 'rubble');
@@ -113,7 +128,7 @@ export function buildWorld() {
   // catwalk: three containers butted end to end, one platform over the run
   cont(46.5, -58.6, 0); cont(46.5, -52.4, 0); cont(46.5, -46.2, 0);
   platforms.push({ x1: 45.25, z1: -61.7, x2: 47.75, z2: -43.1, y: 2.6 });
-  stack(46.5, -43.1, 0, 1, 2);
+  stack(46.5, -43.1, 0, 1, 2, 2.5);            // 2.5 wide = flush with the run
   add(62, -70, 1.2, 6, 1.3, 'rubble');
   add(36, -60, 6, 1.2, 1.3, 'rubble');
   add(72, -58, 6, 1.2, 1.3, 'rubble');
@@ -174,7 +189,7 @@ export function buildWorld() {
   jersey(-56.5, 34, 0); jersey(-56.5, 64, 0); jersey(-56.5, 72, 0);
   // roadside structures, so the shoulder is not a bare strip either
   cont(-72, 62, 1); cont(-64, 68, 0); cont(-42, 64, 1); cont(-30, 70, 0);
-  cont(-76, 34, 0); cont(-46, 34, 1);
+  cont(-76, 34, 0); cont(-46, 36, 1);
   add(-68, 76, 12, 1.2, 1.4, 'rubble');
   add(-36, 76, 1.2, 8, 1.4, 'rubble');
   add(-24, 60, 1.2, 8, 1.3, 'rubble');
@@ -197,49 +212,67 @@ export function buildWorld() {
   add(69, 26, 2.6, 2.6, 1.6, 'rock');
   add(56, 80, 3, 3, 1.9, 'rock');
   add(80, 46, 2.8, 2.8, 1.8, 'rock');
-  add(26, 30, 2.6, 2.6, 1.5, 'rock');
+  add(33, 27, 2.8, 2.8, 1.9, 'rock');   // astride the (80,-20)-(-20,80) spawn diagonal
   add(66, 60, 2.4, 2.4, 1.4, 'rock');
 
   // ------------------------------------------------------- the ring road
   // Every district hangs off this loop, and the four radials run inward from
   // it. Wrecks and barriers along it keep the 90 m straights honest.
-  car(-36, -37, 1); car(-10, -42, 1); car(20, -43, 1);
-  jersey(-24, -43, 1); jersey(6, -37, 1); jersey(34, -38, 1);
-  car(43, -30, 0); car(42, -2, 0); car(43, 26, 0);
-  jersey(37, -16, 0); jersey(38, 12, 0); jersey(37, 38, 0);
+  // nothing here may sit inside a district shell: the ring road runs over the
+  // depot's footprint, so its furniture stays clear of x -45..-27 on that leg
+  car(-22, -40, 1); car(-10, -42, 1); car(20, -43, 1);
+  hesco(-24, -43, 1); jersey(6, -37, 1); hesco(34, -38, 1);
+  car(43, -27, 0); car(42, -2, 0); car(43, 26, 0);
+  hesco(37, -16, 0); hesco(38, 12, 0); jersey(37, 38, 0);
   car(-34, 43, 1); car(-6, 42, 1); car(22, 43, 1);
-  jersey(-20, 37, 1); jersey(8, 38, 1); jersey(36, 37, 1);
-  car(-43, 30, 0); car(-42, 2, 0); car(-43, -26, 0);
-  jersey(-37, 16, 0); jersey(-38, -12, 0); jersey(-37, -38, 0);
-  add(-8, -30, 5, 1.2, 1.3, 'rubble');
-  add(9, -27, 1.2, 5, 1.3, 'rubble');
-  add(30, -8, 1.2, 5, 1.3, 'rubble');
-  add(27, 9, 5, 1.2, 1.3, 'rubble');
-  add(8, 30, 5, 1.2, 1.3, 'rubble');
-  add(-9, 27, 1.2, 5, 1.3, 'rubble');
-  add(-30, 8, 1.2, 5, 1.3, 'rubble');
-  add(-27, -9, 5, 1.2, 1.3, 'rubble');
+  hesco(-20, 37, 1); jersey(8, 38, 1); hesco(30, 37, 1);
+  car(-43, 30, 0); car(-42, 2, 0); car(-43, -23, 0);
+  jersey(-37, 16, 0); hesco(-38, -12, 0); jersey(-37, -24, 0);
+  // the eight radial shoulders: 1.75 so a body pinned on a radial has somewhere
+  // to break a sightline, not just something to trip over
+  add(-8, -30, 5, 1.2, 1.75, 'rubble');
+  add(9, -27, 1.2, 5, 1.75, 'rubble');
+  add(30, -8, 1.2, 5, 1.75, 'rubble');
+  add(27, 9, 5, 1.2, 1.75, 'rubble');
+  add(8, 30, 5, 1.2, 1.75, 'rubble');
+  add(-9, 27, 1.2, 5, 1.75, 'rubble');
+  add(-30, 8, 1.2, 5, 1.75, 'rubble');
+  add(-27, -9, 5, 1.2, 1.75, 'rubble');
   // outer band cover, so the run in from a spawn is never a bare 25 m
-  add(-62, -14, 1.3, 8, 1.4, 'rubble');
-  add(-62, 12, 1.3, 8, 1.4, 'rubble');
-  add(62, -12, 1.3, 8, 1.4, 'rubble');
-  add(62, 14, 1.3, 8, 1.4, 'rubble');
-  add(-14, -62, 8, 1.3, 1.4, 'rubble');
-  add(12, -62, 8, 1.3, 1.4, 'rubble');
-  add(-12, 62, 8, 1.3, 1.4, 'rubble');
-  add(14, 62, 8, 1.3, 1.4, 'rubble');
-  add(-78, -14, 2.8, 2.8, 1.8, 'rock');
-  add(-78, 14, 2.6, 2.6, 1.6, 'rock');
-  add(78, -14, 2.6, 2.6, 1.7, 'rock');
-  add(78, 14, 2.8, 2.8, 1.8, 'rock');
+  add(-62, -14, 1.3, 8, 1.75, 'rubble');
+  add(-62, 12, 1.3, 8, 1.75, 'rubble');
+  add(62, -12, 1.3, 8, 1.75, 'rubble');
+  add(62, 14, 1.3, 8, 1.75, 'rubble');
+  add(-14, -62, 8, 1.3, 1.75, 'rubble');
+  add(12, -62, 8, 1.3, 1.75, 'rubble');
+  add(-12, 62, 8, 1.3, 1.75, 'rubble');
+  add(14, 62, 8, 1.3, 1.75, 'rubble');
+  // these four straddle the |x| = 80 spawn line the way the |z| = 80 pair does,
+  // so the two spawns on each side cannot see each other down it
+  add(-80, -14, 2.8, 2.8, 1.8, 'rock');
+  add(-80, 14, 2.6, 2.6, 1.6, 'rock');
+  add(80, -14, 2.6, 2.6, 1.7, 'rock');
+  add(80, 14, 2.8, 2.8, 1.8, 'rock');
   add(-14, -80, 2.6, 2.6, 1.6, 'rock');
   add(14, -80, 2.8, 2.8, 1.8, 'rock');
   add(-14, 80, 2.8, 2.8, 1.7, 'rock');
   add(14, 80, 2.6, 2.6, 1.6, 'rock');
-  add(0, -46, 7, 1.3, 1.4, 'rubble');
-  add(0, 46, 7, 1.3, 1.4, 'rubble');
-  add(-46, 0, 1.3, 7, 1.4, 'rubble');
-  add(46, 0, 1.3, 7, 1.4, 'rubble');
+  // and these break the remaining spawn-to-spawn lines: the 50 m pairs along
+  // each edge, and the two 160 m runs straight down z = +/-20 from one side of
+  // the arena to the other
+  add(-45, -80, 3, 3, 2.1, 'rock');
+  add(45, -80, 3, 3, 2.1, 'rock');
+  add(-45, 80, 3, 3, 2.1, 'rock');
+  add(48, 80, 3, 3, 2.1, 'rock');
+  add(-55, -20, 3, 3, 2.1, 'rock');
+  add(55, -20, 3, 3, 2.1, 'rock');
+  add(-55, 20, 3, 3, 2.1, 'rock');
+  add(55, 20, 3, 3, 2.1, 'rock');
+  add(76, 50, 3, 3, 2.1, 'rock');
+  add(0, -46, 7, 1.3, 1.75, 'rubble');
+  add(0, 46, 7, 1.3, 1.75, 'rubble');
+  add(-46, 0, 1.3, 7, 1.75, 'rubble');
+  add(46, 0, 1.3, 7, 1.75, 'rubble');
   add(-74, 2, 1.3, 8, 1.4, 'rubble');
   add(74, -2, 1.3, 8, 1.4, 'rubble');
   add(2, -74, 8, 1.3, 1.4, 'rubble');
@@ -248,9 +281,9 @@ export function buildWorld() {
   add(70, 8, 2.6, 2.6, 1.6, 'rock');
   add(-8, 70, 2.6, 2.6, 1.6, 'rock');
   add(8, -70, 2.6, 2.6, 1.6, 'rock');
-  add(-62, -40, 2.6, 2.6, 1.6, 'rock');
+  add(-50, -46, 2.6, 2.6, 1.6, 'rock');
   add(62, 40, 2.6, 2.6, 1.6, 'rock');
-  add(-40, 62, 2.6, 2.6, 1.6, 'rock');
+  add(-36, 62, 2.6, 2.6, 1.6, 'rock');
   add(40, -62, 2.6, 2.6, 1.6, 'rock');
 
   // ------------------------------------------------------- ground materials
@@ -308,7 +341,9 @@ export function buildWorld() {
     { id: 5, type: 'health', x: -30, z: -24 },
     { id: 6, type: 'health', x: -34, z: 30 },
     { id: 7, type: 'health', x: 30, z: 34 },
-    { id: 8, type: 'longshot', x: -4.4, z: 0 },    // the prize, on the plinth
+    // the prize, on the plinth. Deliberately NOT the longshot: the deck already
+    // sees most of the walkable map, and no bot can climb up to contest it.
+    { id: 8, type: 'shotgun', x: -4.4, z: 0 },
   ];
 
   return { size: SIZE, obstacles, platforms, ground, props, spawns, pickups, pois };
