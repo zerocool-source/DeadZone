@@ -380,10 +380,30 @@ const KILL_TARGET = 15;
 const RESPAWN_S = 3;
 const INTERMISSION_S = 8;
 const PICKUP_RESPAWN_S = 25;
-const MAX_PLAYERS = 8;
-// bots keep rooms alive: fill to TARGET_COMBATANTS, retire as humans join
-const TARGET_COMBATANTS = 4;
-const BOT_NAMES = ['VULTURE', 'JACKAL', 'RUST', 'ASH', 'CROW', 'HOLLOW', 'GRIM'];
+const MAX_PLAYERS = 24;
+// bots keep the battlefield full: fill to TARGET_COMBATANTS, retire as humans join
+const TARGET_COMBATANTS = 20;
+const TEAM_TARGET = 75;            // team kills that win the round
+// Two squads. A bot's name tells you which side it is on at a glance.
+const BOT_NAMES = [
+  // team 0 — WOLFPACK (your squad)
+  'RUST', 'ASH', 'CROW', 'HOLLOW', 'GRIM', 'SPUR', 'DUST', 'REAPER', 'MULE', 'TICK',
+  // team 1 — VULTURES
+  'VULTURE', 'JACKAL', 'CINDER', 'RASP', 'GHOUL', 'SCAB', 'MAW', 'BRIAR', 'HUSK', 'VERM',
+];
+const TEAM_NAMES = ['WOLFPACK', 'VULTURES'];
+
+// ---- air support -----------------------------------------------------------
+// Gunships and jets are hazards owned by the server: they fly a scripted path,
+// broadcast their transform every tick, and damage whoever is underneath.
+const GUNSHIP_EVERY = [38000, 62000];   // ms between gunship sorties
+const GUNSHIP_LIFE = 34000;
+const GUNSHIP_ALT = 34;
+const GUNSHIP_DPS_HIT = 17;             // per burst round that lands
+const JET_EVERY = [52000, 84000];       // ms between jet strike runs
+const JET_ALT = 58;
+const JET_SPEED = 105;
+const BOMB_COUNT = 6, BOMB_SPACING = 15, BOMB_RADIUS = 13, BOMB_DMG = 130;
 // Difficulty = mechanics. How fast the bot can slew its aim (turn, rad/s), how
 // tight a cone it needs before it pulls the trigger (tol), how much its hands
 // shake (jitter), how long it takes to react, how well it leads a runner.
@@ -415,6 +435,8 @@ const WEAPONS = {
   rifle:    { dmg: 16, rpm: 540, range: 80,  pellets: 1, spread: 0.022, mag: 30, reload: 1.8 },
   shotgun:  { dmg: 9,  rpm: 85,  range: 24,  pellets: 8, spread: 0.09,  mag: 6,  reload: 2.4 },
   longshot: { dmg: 70, rpm: 45,  range: 130, pellets: 1, spread: 0.003, mag: 5,  reload: 2.6 },
+  // always-carried sidearm: the thing you switch to instead of reloading
+  pistol:   { dmg: 22, rpm: 300, range: 45,  pellets: 1, spread: 0.028, mag: 12, reload: 1.3 },
 };
 
 // ray vs AABB (slab), returns t or Infinity; boxes rise from y=0 to h.
@@ -476,6 +498,11 @@ export class GameServer extends DurableObject {
     this.nextId = 1;
     this.timer = null;
     this.grenades = [];
+    this.teamKills = [0, 0];
+    this.air = [];                 // gunships and jets currently over the map
+    this.bombs = [];               // ordnance in flight from a jet run
+    this.nextAirId = 1;
+    this.scheduleAir(Date.now());
 
     // Bounding sphere per obstacle (cx, cy, cz, r) — lets a LOS ray reject most
     // boxes in ~10 ops instead of running the full slab test on all of them.
@@ -508,8 +535,13 @@ export class GameServer extends DurableObject {
     let have = this.botCount();
     while (have < want) {
       const used = new Set([...this.byId.values()].map(p => p.name));
-      const name = BOT_NAMES.find(n => !used.has(n)) || ('BOT' + this.nextId);
-      const p = this.spawnPlayer(name);
+      // name pool is split down the middle so a callsign always reads as a side
+      const team = this.thinnestTeam();
+      const half = BOT_NAMES.length / 2;
+      const pool = team === 0 ? BOT_NAMES.slice(0, half) : BOT_NAMES.slice(half);
+      const name = pool.find(n => !used.has(n)) ||
+        BOT_NAMES.find(n => !used.has(n)) || ('BOT' + this.nextId);
+      const p = this.spawnPlayer(name, team);
       p.bot = true;
       p.diff = BOT_DIFFS[(Math.random() * BOT_DIFFS.length) | 0];
       // one random skill x personality combination per bot
@@ -539,7 +571,12 @@ export class GameServer extends DurableObject {
       have++;
     }
     while (have > want) {
-      const bot = [...this.byId.values()].find(p => p.bot);
+      // retire from the fuller side so leaving humans cannot unbalance the game
+      let a = 0, b = 0;
+      for (const p of this.byId.values()) (p.team === 0 ? a++ : b++);
+      const fat = a > b ? 0 : 1;
+      const bot = [...this.byId.values()].find(p => p.bot && p.team === fat) ||
+        [...this.byId.values()].find(p => p.bot);
       if (!bot) break;
       this.byId.delete(bot.id);
       this.events.push(['leave', bot.id, bot.name]);
@@ -656,6 +693,7 @@ export class GameServer extends DurableObject {
     let best = null, bestScore = -Infinity;
     for (const o of this.byId.values()) {
       if (o === p || o.hp <= 0) continue;
+      if (o.team === p.team) continue;             // squadmates are not targets
       const dx = o.x - p.x, dz = o.z - p.z;
       const d2 = dx * dx + dz * dz;
       if (d2 > BOT_SIGHT * BOT_SIGHT) continue;
@@ -1185,7 +1223,8 @@ export class GameServer extends DurableObject {
       this.byId.set(player.id, player);
       this.events.push(['join', player.id, player.name]);
       try {
-        ws.send(JSON.stringify({ t: 'w', id: player.id, killTarget: KILL_TARGET }));
+        ws.send(JSON.stringify({ t: 'w', id: player.id, killTarget: KILL_TARGET,
+          team: player.team, teamTarget: TEAM_TARGET, teamNames: TEAM_NAMES }));
       } catch {}
       this.balanceBots();
       this.startTicking();
@@ -1212,6 +1251,8 @@ export class GameServer extends DurableObject {
         p.reloading = w.reload;
         this.events.push(['reload', p.id]);
       }
+    } else if (m.t === 'sw') {                       // switch weapon slot
+      this.switchSlot(p, m.i | 0);
     }
   }
 
@@ -1237,19 +1278,54 @@ export class GameServer extends DurableObject {
     this.timer = setInterval(() => this.tick(), TICK_MS);
   }
 
-  spawnPlayer(name) {
+  spawnPlayer(name, team) {
     const p = {
       id: this.nextId++, name,
+      team: team === undefined ? this.thinnestTeam() : team,
       x: 0, y: 0, z: 0, vy: 0, yaw: 0, pitch: 0,
       px: 0, pz: 0, vx: 0, vz: 0,        // last tick position + planar velocity
       hp: 100, kills: 0, deaths: 0,
+      // two carried weapons; slot 0 is the one in your hands
+      slots: [
+        { weapon: 'rifle', mag: WEAPONS.rifle.mag },
+        { weapon: 'pistol', mag: WEAPONS.pistol.mag },
+      ],
+      slot: 0,
       weapon: 'rifle', mag: WEAPONS.rifle.mag, reloading: 0,
-      respawn: 0, lastFire: 0,
+      respawn: 0, lastFire: 0, switchAt: 0,
       input: { mx: 0, mz: 0, sprint: false, jump: false, crouch: false },
       speedNorm: 0, stepAcc: 0, airborne: false,
     };
     this.placeAtSpawn(p);
     return p;
+  }
+
+  // keep the sides even; ties go to the side the fewest humans are on
+  thinnestTeam() {
+    let a = 0, b = 0;
+    for (const p of this.byId.values()) (p.team === 0 ? a++ : b++);
+    return a <= b ? 0 : 1;
+  }
+
+  // mirror the live slot back into the flat fields the rest of the sim reads
+  syncSlot(p) {
+    const s = p.slots[p.slot];
+    p.weapon = s.weapon;
+    p.mag = s.mag;
+  }
+  stashSlot(p) { p.slots[p.slot].mag = p.mag; p.slots[p.slot].weapon = p.weapon; }
+
+  switchSlot(p, i) {
+    const now = Date.now();
+    if (p.hp <= 0 || i === p.slot || i < 0 || i >= p.slots.length) return;
+    if (now < p.switchAt) return;
+    this.stashSlot(p);
+    p.slot = i;
+    p.reloading = 0;
+    p.switchAt = now + 450;              // swap time; also gates spam
+    p.lastFire = now + 200;              // can't fire mid-swap
+    this.syncSlot(p);
+    this.events.push(['swap', p.id, p.weapon]);
   }
 
   placeAtSpawn(p) {
@@ -1308,6 +1384,7 @@ export class GameServer extends DurableObject {
       let hit = null, hitT = wallT, head = false;
       for (const o of this.byId.values()) {
         if (o === p || o.hp <= 0) continue;
+        if (o.team === p.team) continue;                  // no friendly fire
         const low = o.input.crouch;                       // crouching = smaller target
         const tb = raySphere(ox, oy, oz, rx, ry, rz, o.x, o.y + (low ? 0.68 : 1.0), o.z, low ? 0.48 : 0.55);
         const th = raySphere(ox, oy, oz, rx, ry, rz, o.x, o.y + (low ? 1.15 : 1.62), o.z, 0.3);
@@ -1321,7 +1398,139 @@ export class GameServer extends DurableObject {
         if (hit.hp <= 0) this.onKill(p, hit);
       }
     }
+    this.stashSlot(p);
     if (p.mag === 0) { p.reloading = w.reload; this.events.push(['reload', p.id]); }
+  }
+
+  // ---- air support ---------------------------------------------------------
+  // Everything here is server-owned: the client only draws what the snapshot
+  // says. Air units damage BOTH teams — they are weather with guns.
+  scheduleAir(now) {
+    this.nextGunship = now + GUNSHIP_EVERY[0] +
+      Math.random() * (GUNSHIP_EVERY[1] - GUNSHIP_EVERY[0]);
+    this.nextJet = now + JET_EVERY[0] +
+      Math.random() * (JET_EVERY[1] - JET_EVERY[0]);
+  }
+
+  spawnGunship(now) {
+    const S = this.world.size;
+    this.air.push({
+      kind: 'heli', id: this.nextAirId++,
+      // slow orbit of the arena; it hunts whatever is under it
+      ang: Math.random() * Math.PI * 2, rad: S * 0.55, spin: 0.13,
+      x: 0, y: GUNSHIP_ALT, z: 0, yaw: 0,
+      until: now + GUNSHIP_LIFE, nextShot: now + 2500, targetId: 0,
+    });
+    this.events.push(['air', 'heli']);
+  }
+
+  spawnJet(now) {
+    const S = this.world.size;
+    // a straight run across the whole map through a random offset from centre
+    const a = Math.random() * Math.PI * 2;
+    const off = (Math.random() - 0.5) * S * 0.7;
+    const dx = Math.cos(a), dz = Math.sin(a);
+    this.air.push({
+      kind: 'jet', id: this.nextAirId++,
+      x: -dx * (S + 60) - dz * off, z: -dz * (S + 60) + dx * off,
+      y: JET_ALT, dx, dz, yaw: Math.atan2(-dx, -dz),
+      // bombs are released around the midpoint so they land inside the arena
+      dropAt: (S + 60) - (BOMB_COUNT * BOMB_SPACING) / 2, dropped: 0,
+      until: now + 20000,
+    });
+    this.events.push(['air', 'jet']);
+  }
+
+  tickAir(dt, now) {
+    if (now >= this.nextGunship && !this.air.some(a => a.kind === 'heli')) {
+      this.spawnGunship(now);
+      this.nextGunship = now + GUNSHIP_EVERY[0] +
+        Math.random() * (GUNSHIP_EVERY[1] - GUNSHIP_EVERY[0]);
+    }
+    if (now >= this.nextJet && !this.air.some(a => a.kind === 'jet')) {
+      this.spawnJet(now);
+      this.nextJet = now + JET_EVERY[0] +
+        Math.random() * (JET_EVERY[1] - JET_EVERY[0]);
+    }
+
+    for (let i = this.air.length - 1; i >= 0; i--) {
+      const a = this.air[i];
+      if (a.kind === 'heli') {
+        a.ang += a.spin * dt;
+        a.x = Math.cos(a.ang) * a.rad;
+        a.z = Math.sin(a.ang) * a.rad;
+        a.yaw = a.ang + Math.PI / 2;     // nose along the orbit
+        if (now >= a.nextShot && this.phase === 'play') {
+          a.nextShot = now + 260;
+          // strafe the nearest living body under the flight path
+          let tgt = null, bestD = 46;
+          for (const o of this.byId.values()) {
+            if (o.hp <= 0) continue;
+            const d = Math.hypot(o.x - a.x, o.z - a.z);
+            if (d < bestD) { bestD = d; tgt = o; }
+          }
+          if (tgt) {
+            a.targetId = tgt.id;
+            // walking fire: scattered around the target, not a laser
+            const sx = tgt.x + (Math.random() - 0.5) * 7;
+            const sz = tgt.z + (Math.random() - 0.5) * 7;
+            this.events.push(['strafe', +a.x.toFixed(1), +a.y.toFixed(1), +a.z.toFixed(1),
+              +sx.toFixed(1), +sz.toFixed(1)]);
+            for (const o of this.byId.values()) {
+              if (o.hp <= 0) continue;
+              if (Math.hypot(o.x - sx, o.z - sz) > 2.6) continue;
+              o.hp -= GUNSHIP_DPS_HIT;
+              this.events.push(['hit', 0, o.id, GUNSHIP_DPS_HIT, 0]);
+              if (o.hp <= 0) {
+                o.hp = 0; o.deaths++; o.respawn = RESPAWN_S;
+                this.events.push(['kill', 0, o.id, 'gunship']);
+              }
+            }
+          } else { a.targetId = 0; }
+        }
+        if (now >= a.until) { this.air.splice(i, 1); continue; }
+      } else {
+        const step = JET_SPEED * dt;
+        a.x += a.dx * step; a.z += a.dz * step;
+        a.travelled = (a.travelled || 0) + step;
+        const travelled = a.travelled;
+        if (a.dropped < BOMB_COUNT && travelled >= a.dropAt + a.dropped * BOMB_SPACING) {
+          a.dropped++;
+          this.bombs.push({ x: a.x, y: a.y, z: a.z, vy: -2, dx: a.dx, dz: a.dz });
+        }
+        if (now >= a.until || travelled > (this.world.size + 60) * 2.4) {
+          this.air.splice(i, 1); continue;
+        }
+      }
+    }
+
+    // falling bombs
+    for (let i = this.bombs.length - 1; i >= 0; i--) {
+      const b = this.bombs[i];
+      b.vy += GRAV * dt;
+      b.y += b.vy * dt;
+      b.x += b.dx * JET_SPEED * 0.35 * dt;
+      b.z += b.dz * JET_SPEED * 0.35 * dt;
+      const floor = groundHeightAt(b.x, b.z, this.world);
+      if (b.y <= floor) {
+        this.bombs.splice(i, 1);
+        this.events.push(['airburst', +b.x.toFixed(1), +floor.toFixed(1), +b.z.toFixed(1)]);
+        for (const o of this.byId.values()) {
+          if (o.hp <= 0) continue;
+          const d = Math.hypot(o.x - b.x, (o.y + 1) - floor, o.z - b.z);
+          if (d > BOMB_RADIUS) continue;
+          const blocked = !this.losPoint(b.x, floor + 0.6, b.z, o);
+          const dmg = Math.round(BOMB_DMG * (1 - d / BOMB_RADIUS) * (blocked ? 0.3 : 1));
+          if (dmg <= 0) continue;
+          o.hp -= dmg;
+          this.events.push(['hit', 0, o.id, dmg, 0]);
+          if (o.hp <= 0) {
+            o.hp = 0; o.deaths++; o.respawn = RESPAWN_S;
+            this.events.push(['kill', 0, o.id, 'airstrike']);
+          }
+        }
+      }
+    }
   }
 
   onKill(killer, victim) {
@@ -1329,12 +1538,14 @@ export class GameServer extends DurableObject {
     victim.deaths++;
     victim.respawn = RESPAWN_S;
     killer.kills++;
+    // team score only for a genuine enemy kill; the air hazard credits nobody
+    if (killer.team !== victim.team) this.teamKills[killer.team]++;
     this.events.push(['kill', killer.id, victim.id, killer.weapon]);
-    if (killer.kills >= KILL_TARGET && this.phase === 'play') {
+    if (this.teamKills[killer.team] >= TEAM_TARGET && this.phase === 'play') {
       this.phase = 'over';
-      this.winner = killer.name;
+      this.winner = TEAM_NAMES[killer.team];
       this.phaseEndsAt = Date.now() + INTERMISSION_S * 1000;
-      this.events.push(['end', killer.id, killer.name]);
+      this.events.push(['end', killer.id, TEAM_NAMES[killer.team]]);
     }
   }
 
@@ -1346,14 +1557,24 @@ export class GameServer extends DurableObject {
       if (p.bot && p.hp > 0) this.botThink(p, dt, now);
     }
     this.tickGrenades(dt);
+    this.tickAir(dt, now);
 
     // match reset
     if (this.phase === 'over' && now >= this.phaseEndsAt) {
       this.phase = 'play';
       this.winner = null;
+      this.teamKills = [0, 0];
+      this.air = []; this.bombs = [];
+      this.scheduleAir(now);
       for (const p of this.byId.values()) {
         p.kills = 0; p.deaths = 0; p.hp = 100; p.respawn = 0;
-        p.weapon = 'rifle'; p.mag = WEAPONS.rifle.mag; p.reloading = 0;
+        p.slot = 0;
+        p.slots = [
+          { weapon: 'rifle', mag: WEAPONS.rifle.mag },
+          { weapon: 'pistol', mag: WEAPONS.pistol.mag },
+        ];
+        p.reloading = 0;
+        this.syncSlot(p);
         this.placeAtSpawn(p);
       }
       for (const pk of this.pickups) { pk.active = true; pk.respawnAt = 0; }
@@ -1374,7 +1595,9 @@ export class GameServer extends DurableObject {
       // reload
       if (p.reloading > 0) {
         p.reloading -= dt;
-        if (p.reloading <= 0) { p.reloading = 0; p.mag = WEAPONS[p.weapon].mag; }
+        if (p.reloading <= 0) {
+          p.reloading = 0; p.mag = WEAPONS[p.weapon].mag; this.stashSlot(p);
+        }
       }
       // movement: rotate input into world space, integrate, collide
       const { mx, mz, sprint, jump, crouch } = p.input;
@@ -1460,9 +1683,12 @@ export class GameServer extends DurableObject {
             if (p.hp >= 100) continue;
             p.hp = Math.min(100, p.hp + 50);
           } else {
-            p.weapon = pk.type;
-            p.mag = WEAPONS[pk.type].mag;
+            // a picked-up long gun always lands in the primary slot, so the
+            // sidearm in slot 1 is never lost
+            p.slot = 0;
+            p.slots[0] = { weapon: pk.type, mag: WEAPONS[pk.type].mag };
             p.reloading = 0;
+            this.syncSlot(p);
           }
           pk.active = false;
           pk.respawnAt = now + PICKUP_RESPAWN_S * 1000;
@@ -1489,7 +1715,14 @@ export class GameServer extends DurableObject {
         +p.speedNorm.toFixed(2),
         (p.input.sprint ? 1 : 0) | (p.input.crouch ? 2 : 0) |
         (p.bot ? 4 : 0) | (p.airborne ? 8 : 0),
+        p.team,                                    // [15]
+        p.slots[1 - p.slot].weapon,                // [16] the gun on your back
       ]),
+      // air units: [kind, x, y, z, yaw]
+      air: this.air.map(a => [a.kind, +a.x.toFixed(1), +a.y.toFixed(1),
+        +a.z.toFixed(1), +a.yaw.toFixed(2)]),
+      bm: this.bombs.map(b => [+b.x.toFixed(1), +b.y.toFixed(1), +b.z.toFixed(1)]),
+      ts: this.teamKills,
       pk: this.pickups.map(pk => [pk.id, +pk.active]),
       g: this.grenades.map(g => [+g.x.toFixed(2), +g.y.toFixed(2), +g.z.toFixed(2)]),
       ev: this.events,

@@ -37,6 +37,9 @@
   #reload-hint { font-size:13px; color:#8aff5a; visibility:hidden; animation: blink .7s infinite; }
   @keyframes blink { 50% { opacity:.2; } }
 
+  #teambar { position:absolute; top:38px; left:50%; transform:translateX(-50%); font-size:19px;
+    letter-spacing:2px; text-shadow:1px 1px 2px #000; font-weight:bold; }
+  #teambar #t0 { color:#6fdc5a; } #teambar #t1 { color:#e05545; } #teambar #tsep { color:#7a7a70; margin:0 8px; }
   #score-strip { position:absolute; top:16px; left:50%; transform:translateX(-50%); font-size:15px; letter-spacing:2px; color:#bdbdb2; text-shadow:1px 1px 1px #000; text-align:center; }
   #killfeed { position:absolute; top:16px; right:20px; text-align:right; font-size:13px; color:#c9c9be; text-shadow:1px 1px 1px #000; }
   #killfeed div { margin-bottom:3px; opacity:.95; }
@@ -105,6 +108,7 @@
   <div id="hp-wrap"><div id="hp-bar"><div id="hp-fill"></div></div><div id="hp-label"></div></div>
   <div id="ammo"><div id="weapon-name"></div><div class="mag"></div><div id="reload-hint"></div></div>
   <div id="score-strip"></div>
+  <div id="teambar"><span id="t0"></span><span id="tsep">—</span><span id="t1"></span></div>
   <canvas id="minimap" width="168" height="168"></canvas>
   <div id="zone-label"></div>
   <div id="killfeed"></div>
@@ -119,6 +123,7 @@
     <div class="tbtn" id="btn-jump"></div>
     <div class="tbtn" id="btn-reload"></div>
     <div class="tbtn" id="btn-nade" style="right:150px;bottom:180px"></div>
+    <div class="tbtn" id="btn-swap" style="right:150px;bottom:280px"></div>
     <div class="tbtn" id="btn-ads" style="right:150px;bottom:262px"></div>
   </div>
 </div>
