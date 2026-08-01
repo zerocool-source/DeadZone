@@ -39,6 +39,9 @@ export const STR = {
   airJet: 'AIRSTRIKE INBOUND',
   touchSwap: 'SWAP',
   teamKills: 'TEAM',
+  padOn: 'CONTROLLER CONNECTED — {name}',
+  padOff: 'CONTROLLER DISCONNECTED',
+  quality: 'GRAPHICS: {q}  (K to cycle — shadows and resolution; reload to apply shadows)',
   killers: { gunship: 'GUNSHIP', airstrike: 'AIRSTRIKE', grenade: 'GRENADE' },
   padNote: 'XBOX / PLAYSTATION CONTROLLER SUPPORTED — PLUG IN AND PRESS ANY BUTTON',
 };

@@ -60,8 +60,23 @@ $('btn-ads').textContent = STR.touchAds;
 
 // --- renderer / scene ------------------------------------------------------
 const canvas = $('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, powerPreference: 'high-performance' });
+// Quality is a saved preference, not a guess: 'high' renders at the display's
+// real pixel density (a 4K/Retina panel gets 4K/Retina pixels) and casts
+// shadows; 'low' drops both for weak GPUs. Cycled live with the K key.
+const QUALITY = ['low', 'medium', 'high'];
+let quality = localStorage.getItem('dz_quality') || 'medium';
+if (!QUALITY.includes(quality)) quality = 'medium';
+function dprCap() { return quality === 'high' ? 3 : (quality === 'medium' ? 1.5 : 1); }
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, dprCap()));
+// filmic response instead of raw linear: keeps the sun and muzzle flashes from
+// clipping to flat white and gives the shadows some depth
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = quality !== 'low';
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(COL.fog, 0.009);
 const camera = new THREE.PerspectiveCamera(75, 1, 0.05, 900);
@@ -73,9 +88,23 @@ function resize() {
 }
 addEventListener('resize', resize); addEventListener('orientationchange', resize); resize();
 
-scene.add(new THREE.HemisphereLight(0xb0a890, 0x3a382e, 0.9));
-const sun = new THREE.DirectionalLight(0xe8d9b0, 1.5);
+scene.add(new THREE.HemisphereLight(0xb0a890, 0x3a382e, 0.75));
+const sun = new THREE.DirectionalLight(0xe8d9b0, 2.1);
 sun.position.set(180, 220, -140);
+if (renderer.shadowMap.enabled) {
+  sun.castShadow = true;
+  // one tight orthographic box that follows the player: a shadow camera sized
+  // to the whole 176 m arena would waste the whole map's resolution on nothing
+  sun.shadow.mapSize.set(quality === 'high' ? 2048 : 1024, quality === 'high' ? 2048 : 1024);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 260;
+  const R = 42;
+  sun.shadow.camera.left = -R; sun.shadow.camera.right = R;
+  sun.shadow.camera.top = R; sun.shadow.camera.bottom = -R;
+  sun.shadow.bias = -0.0009;
+  sun.shadow.normalBias = 0.035;
+  scene.add(sun.target);
+}
 scene.add(sun);
 scene.add(new THREE.AmbientLight(0x8a8478, 0.3));
 
@@ -569,6 +598,7 @@ const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete',
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   }
   const ground = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  ground.receiveShadow = renderer.shadowMap.enabled;
   scene.add(ground);
   const dirtMat = new THREE.MeshStandardMaterial({
     color: 0xc9c2b0, roughness: 1, metalness: 0 });
@@ -631,6 +661,7 @@ const MERGED_KINDS = { wall: 'concrete', ruin: 'concrete', building: 'concrete',
     if (MERGED_KINDS[kind]) continue;
     const mat = new THREE.MeshLambertMaterial({ color: COL[kind] ?? 0x666660, flatShading: true });
     const inst = new THREE.InstancedMesh(box, mat, list.length);
+    inst.castShadow = inst.receiveShadow = renderer.shadowMap.enabled;
     list.forEach((b, i) => {
       m4.makeScale(b.x2 - b.x1, b.h, b.z2 - b.z1);
       m4.setPosition((b.x1 + b.x2) / 2, b.h / 2, (b.z1 + b.z2) / 2);
@@ -698,6 +729,7 @@ function instanceRoot(root, norm, count, place) {
   const p = new THREE.Matrix4(), out = new THREE.Matrix4();
   for (const src of srcs) {
     const im = new THREE.InstancedMesh(src.geometry, src.material, count);
+    im.castShadow = im.receiveShadow = renderer.shadowMap.enabled;
     im.frustumCulled = false;
     for (let i = 0; i < count; i++) {
       place(i, p);
@@ -821,7 +853,10 @@ function makeAvatarTpl(key, gltf, targetH) {
   const h = Math.max(0.01, box.max.y - box.min.y);
   const scale = targetH / h;
   gltf.scene.traverse(n => {
-    if (n.isMesh || n.isSkinnedMesh) { n.castShadow = false; n.frustumCulled = false; }
+    if (n.isMesh || n.isSkinnedMesh) {
+      n.castShadow = renderer.shadowMap.enabled;      // soldiers throw shadows
+      n.frustumCulled = false;
+    }
   });
   return {
     key, scene: gltf.scene, scale, yOff: -box.min.y * scale,
@@ -1927,29 +1962,122 @@ if (isTouch) {
 
 // gamepad
 let padNadeLatch = false, padAds = false;
+// Gamepads are messier than the spec suggests: an Xbox pad enumerates as
+// `mapping:"standard"` on Chrome/Edge but can come through with mapping:""
+// (Safari, some macOS/Bluetooth stacks, third-party pads) where the indices
+// move and the triggers arrive as AXES instead of buttons. Read defensively,
+// and expose what we actually see so a pad that misbehaves can be diagnosed
+// on the spot instead of just "not working".
+let padInfo = { present: false, id: '', mapping: '', axes: 0, buttons: 0 };
+let padFiring = false;      // kept separate from the mouse so neither latches
+
+function padButton(gp, i) {
+  const b = gp.buttons[i];
+  if (!b) return 0;
+  return typeof b === 'object' ? (b.value || (b.pressed ? 1 : 0)) : (b || 0);
+}
+// triggers: standard mapping puts them at buttons 6/7, but several drivers
+// report them only as axes (often 2/5 on a 6-axis pad, or 3/4)
+function padTrigger(gp, side) {
+  const btn = padButton(gp, side === 'left' ? 6 : 7);
+  if (btn > 0.15) return btn;
+  if (gp.axes.length >= 6) {
+    const a = gp.axes[side === 'left' ? 4 : 5];
+    if (typeof a === 'number' && a > -0.7) return (a + 1) / 2;   // -1 = released
+  }
+  return 0;
+}
+
 function pollGamepad() {
   padAds = false;
+  padFiring = false;
+  let any = null;
   for (const gp of navigator.getGamepads?.() ?? []) {
-    if (!gp) continue;
-    const dead = v => Math.abs(v) > 0.18 ? v : 0;
-    stick.gx = dead(gp.axes[0] || 0);
-    stick.gz = -dead(gp.axes[1] || 0);
+    if (!gp || !gp.connected) continue;
+    any = gp;
+    const dead = v => (Math.abs(v) > 0.18 ? v : 0);
+    const ax = i => (typeof gp.axes[i] === 'number' ? gp.axes[i] : 0);
+
+    // left stick moves, right stick looks. On a non-standard pad the right
+    // stick is commonly on 3/4 rather than 2/3, so fall back when 2/3 are dead.
+    stick.gx = dead(ax(0));
+    stick.gz = -dead(ax(1));
+    let lookX = dead(ax(2)), lookY = dead(ax(3));
+    if (gp.mapping !== 'standard' && !lookX && !lookY && gp.axes.length > 4) {
+      lookX = dead(ax(3)); lookY = dead(ax(4));
+    }
     const ls = 1 - 0.45 * adsT;
-    me.yaw -= dead(gp.axes[2] || 0) * 0.045 * ls;
-    me.pitch = Math.max(-1.55, Math.min(1.55, me.pitch - dead(gp.axes[3] || 0) * 0.035 * ls));
-    firing = firing || (gp.buttons[7]?.pressed ?? false);
-    padAds = padAds || (gp.buttons[6]?.pressed ?? false); // left trigger = ADS
-    if (gp.buttons[0]?.pressed) held.add('jump'); else if (!isTouch) held.delete('jump');
-    if (gp.buttons[2]?.pressed) send({ t: 'r' });
-    if (gp.buttons[5]?.pressed && !padNadeLatch) { padNadeLatch = true; throwNade(); }
-    else if (!gp.buttons[5]?.pressed) padNadeLatch = false;
-    // Y / triangle swaps weapons
-    if (gp.buttons[3]?.pressed && !padSwapLatch) { padSwapLatch = true; switchTo(mySlot === 0 ? 1 : 0); }
-    else if (!gp.buttons[3]?.pressed) padSwapLatch = false;
-    if (gp.buttons[10]?.pressed) held.add('sprint');
-    if (gp.buttons[1]?.pressed) held.add('crouch'); else if (!isTouch) held.delete('crouch');
+    const sens = padSens * (1 - 0.45 * adsT);
+    me.yaw -= lookX * 0.045 * sens;
+    me.pitch = Math.max(-1.55, Math.min(1.55, me.pitch - lookY * 0.035 * sens));
+
+    if (padTrigger(gp, 'right') > 0.35) padFiring = true;
+    if (padTrigger(gp, 'left') > 0.35) padAds = true;
+
+    if (padButton(gp, 0)) held.add('pad-jump'); else held.delete('pad-jump');
+    if (padButton(gp, 1)) held.add('pad-crouch'); else held.delete('pad-crouch');
+    if (padButton(gp, 10)) held.add('pad-sprint'); else held.delete('pad-sprint');
+
+    if (padButton(gp, 2) && !padReloadLatch) { padReloadLatch = true; send({ t: 'r' }); }
+    else if (!padButton(gp, 2)) padReloadLatch = false;
+    if (padButton(gp, 5) && !padNadeLatch) { padNadeLatch = true; throwNade(); }
+    else if (!padButton(gp, 5)) padNadeLatch = false;
+    if (padButton(gp, 3) && !padSwapLatch) { padSwapLatch = true; switchTo(mySlot === 0 ? 1 : 0); }
+    else if (!padButton(gp, 3)) padSwapLatch = false;
+    break;                                     // first live pad wins
+  }
+  if (any) {
+    padInfo = { present: true, id: any.id, mapping: any.mapping || '(non-standard)',
+      axes: any.axes.length, buttons: any.buttons.length };
+  } else if (padInfo.present) {
+    padInfo = { present: false, id: '', mapping: '', axes: 0, buttons: 0 };
+    stick.gx = 0; stick.gz = 0;
+    held.delete('pad-jump'); held.delete('pad-crouch'); held.delete('pad-sprint');
+  }
+  if (padDiag) drawPadDiag();
+  const el = $('padstat');
+  const want = padInfo.present
+    ? `PAD: ${padInfo.mapping === 'standard' ? 'READY' : 'NON-STANDARD'} · F1 DIAG`
+    : '';
+  if (el.textContent !== want) {
+    el.textContent = want;
+    el.classList.toggle('on', padInfo.present && padInfo.mapping === 'standard');
   }
 }
+
+// A live readout so "the controller does not work" becomes evidence: it shows
+// whether the browser sees a pad at all, and every axis and button live.
+let padDiag = false;
+function drawPadDiag() {
+  const el = $('paddiag');
+  const gp = (navigator.getGamepads?.() ?? [])[0] ||
+    [...(navigator.getGamepads?.() ?? [])].find(Boolean);
+  if (!gp) { el.textContent = 'NO GAMEPAD SEEN BY THE BROWSER\n' +
+    'plug in / press a button on the pad, then click the page'; return; }
+  const ax = [...gp.axes].map((v, i) => `a${i}:${v.toFixed(2)}`).join(' ');
+  const bt = [...gp.buttons].map((b, i) => (b.pressed ? `[${i}]` : `${i}`)).join(' ');
+  el.textContent = `${gp.id}\nmapping:${gp.mapping || '(non-standard)'}\n${ax}\n${bt}`;
+}
+
+addEventListener('gamepadconnected', e => {
+  banner($('sub-banner'), fmt(STR.padOn, { name: (e.gamepad.id || 'CONTROLLER').slice(0, 28) }), 3000);
+});
+addEventListener('gamepaddisconnected', () => banner($('sub-banner'), STR.padOff, 2500));
+addEventListener('keydown', e => {
+  if (e.code !== 'KeyK') return;
+  e.preventDefault();
+  quality = QUALITY[(QUALITY.indexOf(quality) + 1) % QUALITY.length];
+  localStorage.setItem('dz_quality', quality);
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, dprCap()));
+  resize();
+  banner($('sub-banner'), fmt(STR.quality, { q: quality.toUpperCase() }), 2200);
+});
+addEventListener('keydown', e => {
+  if (e.code !== 'F1') return;
+  e.preventDefault();
+  padDiag = !padDiag;
+  $('paddiag').style.display = padDiag ? 'block' : 'none';
+});
 
 // --- local prediction + fire ------------------------------------------------
 let lastFireAt = 0, semiLatch = false, lastInputSend = 0;
@@ -1978,7 +2106,7 @@ function step(dt) {
     const sin = Math.sin(me.yaw), cos = Math.cos(me.yaw);
     const wx = nx * cos - nz * sin;
     const wz = -nx * sin - nz * cos;
-    const sp = held.has('crouch') ? CROUCH_SPEED : (held.has('sprint') ? SPRINT : WALK);
+    const sp = (held.has('crouch') || held.has('pad-crouch')) ? CROUCH_SPEED : ((held.has('sprint') || held.has('pad-sprint')) ? SPRINT : WALK);
     me.x += wx * sp * dt;
     me.z += wz * sp * dt;
   }
@@ -1986,7 +2114,7 @@ function step(dt) {
   // Walking off an edge just leaves me.y above the new ground, so gravity takes
   // over on the next line instead of the player being dropped instantly.
   let gh = groundHeightAt(me.x, me.z, world);
-  if (held.has('jump') && grounded) me.vy = JUMP_V;
+  if ((held.has('jump') || held.has('pad-jump')) && grounded) me.vy = JUMP_V;
   if (me.y > gh || me.vy > 0) {
     me.vy += GRAV * dt;
     me.y += me.vy * dt;
@@ -2027,13 +2155,13 @@ function step(dt) {
   const now = performance.now();
   if (now - lastInputSend > 50) {
     lastInputSend = now;
-    send({ t: 'i', mx, mz, sp: held.has('sprint'), jp: held.has('jump'),
-           cr: held.has('crouch'), yaw: me.yaw, pitch: me.pitch });
+    send({ t: 'i', mx, mz, sp: (held.has('sprint') || held.has('pad-sprint')), jp: (held.has('jump') || held.has('pad-jump')),
+           cr: (held.has('crouch') || held.has('pad-crouch')), yaw: me.yaw, pitch: me.pitch });
   }
 
   // firing
   const w = WEAPONS[me.weapon];
-  if (firing && !me.reloading && me.mag > 0 && (w.auto || !semiLatch)) {
+  if ((firing || padFiring) && !me.reloading && me.mag > 0 && (w.auto || !semiLatch)) {
     if (now - lastFireAt >= 60000 / w.rpm) {
       lastFireAt = now; semiLatch = true;
       const dir = new THREE.Vector3();
@@ -2052,7 +2180,7 @@ function step(dt) {
       if (me.mag > 0) me.mag--; // optimistic; server value overwrites
     }
   }
-  if (!firing) semiLatch = false;
+  if (!firing && !padFiring) semiLatch = false;
 }
 
 // --- remote entities -----------------------------------------------------------
@@ -2265,8 +2393,8 @@ const chEl = $('crosshair');
 let chGap = 5, chShown = -1;
 function updateCrosshair(dt, moveAmt) {
   let target = 3.5 + moveAmt * 7 + vmRecoil * 9;
-  if (held.has('sprint') && moveAmt > 0.1) target += 4;
-  if (held.has('crouch')) target -= 1.8;
+  if ((held.has('sprint') || held.has('pad-sprint')) && moveAmt > 0.1) target += 4;
+  if ((held.has('crouch') || held.has('pad-crouch'))) target -= 1.8;
   target *= 1 - 0.55 * adsT;
   chGap += (Math.max(1, target) - chGap) * Math.min(1, dt * 14);
   if (Math.abs(chGap - chShown) > 0.25) {
@@ -2380,6 +2508,11 @@ function frame(now) {
   acc += dt;
   while (acc >= STEP) { step(STEP); acc -= STEP; }
 
+  if (sun.castShadow) {
+    // the light direction is fixed, so slide the whole rig with the camera
+    sun.target.position.set(me.x, 0, me.z);
+    sun.position.set(me.x + 90, 110, me.z - 70);
+  }
   updateRemotes(dt, now);
   updateTracers(now);
   updatePuffs(dt);
@@ -2411,7 +2544,7 @@ function frame(now) {
   const moveAmt = Math.min(1, Math.hypot(moving.mx, moving.mz));
   const adsWant = (ads || padAds) && me.alive && joined ? 1 : 0;
   adsT += (adsWant - adsT) * Math.min(1, dt * 13);
-  const sprintWant = (held.has('sprint') && moveAmt > 0.15 && !adsWant) ? 1 : 0;
+  const sprintWant = ((held.has('sprint') || held.has('pad-sprint')) && moveAmt > 0.15 && !adsWant) ? 1 : 0;
   sprintT += (sprintWant - sprintT) * Math.min(1, dt * 6);
   const fovWant = FOV_BASE + (FOV_ADS - FOV_BASE) * adsT +
     (FOV_SPRINT - FOV_BASE) * sprintT * (1 - adsT);
@@ -2419,7 +2552,7 @@ function frame(now) {
   updateCrosshair(dt, moveAmt);
 
   // camera (+ crouch dip, explosion shake)
-  const eyeTarget = held.has('crouch') ? 1.1 : EYE;
+  const eyeTarget = (held.has('crouch') || held.has('pad-crouch')) ? 1.1 : EYE;
   me.eye += (eyeTarget - me.eye) * Math.min(1, dt * 12);
   camera.position.set(me.x, me.y + me.eye, me.z);
   camera.rotation.set(0, 0, 0);

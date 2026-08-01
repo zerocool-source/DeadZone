@@ -92,6 +92,12 @@
   #btn-fire { right:26px; bottom:110px; width:92px; height:92px; }
   #btn-jump { right:140px; bottom:60px; }
   #btn-reload { right:40px; bottom:230px; }
+  #padstat { position:absolute; left:20px; bottom:70px; font-size:12px; letter-spacing:1px;
+    color:#6a6a60; text-shadow:1px 1px 1px #000; }
+  #padstat.on { color:#8aff5a; }
+  #paddiag { position:fixed; left:20px; top:50%; transform:translateY(-50%); z-index:15;
+    display:none; white-space:pre; font:11px/1.5 'Courier New',monospace; color:#8aff5a;
+    background:rgba(8,10,8,.86); border:1px solid #35502a; padding:10px 14px; max-width:46vw; }
   #dev { position:fixed; top:4px; right:4px; color:#0f0; font:12px monospace; display:none; z-index:20; }
 </style>
 </head>
@@ -105,6 +111,7 @@
   <div id="dmgnums"></div>
   <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><i class="dot"></i></div>
   <div id="hitmarker"></div>
+  <div id="padstat"></div>
   <div id="hp-wrap"><div id="hp-bar"><div id="hp-fill"></div></div><div id="hp-label"></div></div>
   <div id="ammo"><div id="weapon-name"></div><div class="mag"></div><div id="reload-hint"></div></div>
   <div id="score-strip"></div>
@@ -127,6 +134,7 @@
     <div class="tbtn" id="btn-ads" style="right:150px;bottom:262px"></div>
   </div>
 </div>
+<div id="paddiag"></div>
 <div id="dev"></div>
 
 <div id="join-screen" class="screen">

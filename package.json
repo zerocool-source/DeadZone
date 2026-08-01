@@ -4,7 +4,9 @@
   "description": "DeadZone - round-based FPS zombie survival",
   "main": "index.js",
   "scripts": {
-    "start": "npx serve -l 3000 ."
+    "start": "node server/index.mjs",
+    "serve": "node server/index.mjs",
+    "zombies": "npx serve -l 3000 ."
   },
   "repository": {
     "type": "git",
@@ -14,7 +16,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "ws": "^8.21.1"
   },
   "type": "module",
   "devDependencies": {
